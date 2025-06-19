@@ -7,6 +7,7 @@ from langchain_core.documents import Document
 def generate_chroma_db(structured_profiles, chroma_dir):
     """
     Generates and persists the ChromaDB from structured employee profiles.
+    Updated to use 'email_id' and 'phone_number' instead of 'contact_info'.
     """
     if os.path.exists(chroma_dir):
         print(f"Clearing existing ChromaDB directory: {chroma_dir}")
@@ -29,7 +30,8 @@ def generate_chroma_db(structured_profiles, chroma_dir):
                   f"Skills: {skills_str}\n" \
                   f"Experience: {profile.get('experience', 'N/A')}\n" \
                   f"Education: {profile.get('education', 'N/A')}\n" \
-                  f"Contact Info: {profile.get('contact_info', 'N/A')}\n" \
+                  f"Email: {profile.get('email_id', 'N/A')}\n" \
+                  f"Phone: {profile.get('phone_number', 'N/A')}\n" \
                   f"---END EMPLOYEE PROFILE---\n"
         
         # Store all original structured profile details as metadata.
@@ -42,8 +44,8 @@ def generate_chroma_db(structured_profiles, chroma_dir):
             "skills": skills_str, # Store as string for metadata
             "experience": profile.get("experience", "N/A"),
             "education": profile.get("education", "N/A"),
-            "contact_info": profile.get("contact_info", "N/A"),
-            # Store the original filename if it was carried through, useful for debugging
+            "email_id": profile.get("email_id", "N/A"), # NEW METADATA FIELD
+            "phone_number": profile.get("phone_number", "N/A"), # NEW METADATA FIELD
             "original_filename": profile.get("_original_filename", "N/A") 
         }
         documents.append(Document(page_content=content, metadata=metadata))

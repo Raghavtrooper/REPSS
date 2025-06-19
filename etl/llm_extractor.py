@@ -21,6 +21,7 @@ def initialize_ollama_llm(model_name):
 def get_extraction_prompt():
     """
     Defines and returns the ChatPromptTemplate for structured data extraction.
+    Updated to extract 'email_id' and 'phone_number' separately.
     """
     return ChatPromptTemplate.from_messages([
         ("system",
@@ -34,9 +35,10 @@ def get_extraction_prompt():
          "- 'skills': A JSON array of key technical or soft skills (list of strings). If no skills, provide an empty array `[]`.\n"
          "- 'experience': **CRITICAL**: Provide a SINGLE, CONCISE TEXT SUMMARY of ALL work experience. DO NOT provide a list of experience objects or detailed bullet points; flatten all experience into ONE descriptive string.\n"
          "- 'education': **CRITICAL**: Provide a SINGLE, CONCISE TEXT SUMMARY of ALL education history. DO NOT provide a list of education objects; flatten all education into ONE descriptive string.\n"
-         "- 'contact_info': Candidate's primary contact information (email, phone, LinkedIn if present) (string), e.g., 'john.doe@example.com | 123-456-7890'.\n\n"
+         "- 'email_id': Candidate's primary email address (string). Use 'Not Found' if not explicitly found.\n" # NEW FIELD
+         "- 'phone_number': Candidate's primary phone number (string). Use 'Not Found' if not explicitly found.\n\n" # NEW FIELD
          "Your response MUST start with the opening curly brace `{{` and end with the closing curly brace `}}`. "
-         "Example JSON structure (observe the single string for experience/education):\n"
+         "Example JSON structure (observe the single string for experience/education, and separate contact fields):\n"
          "```json\n"
          "{{\n"
          "  \"name\": \"John Doe\",\n"
@@ -45,7 +47,8 @@ def get_extraction_prompt():
          "  \"skills\": [\"Python\", \"AWS\", \"Docker\"],\n"
          "  \"experience\": \"5 years in software development at Example Corp, responsible for backend services and cloud deployments, including a previous role at ABC Inc. as a Junior Developer.\",\n"
          "  \"education\": \"B.Sc. in Computer Science from University X (2018-2022) and an online certificate in Data Science from XYZ Academy.\",\n"
-         "  \"contact_info\": \"john.doe@example.com | +1-555-123-4567\"\n"
+         "  \"email_id\": \"john.doe@example.com\",\n" # NEW EXAMPLE
+         "  \"phone_number\": \"+1-555-123-4567\"\n" # NEW EXAMPLE
          "}}\n"
          "```\n"
          "Ensure ALL string values within the JSON are correctly escaped if they contain double quotes or backslashes. DO NOT include any other text, preambles, or explanations outside the JSON object. Just the JSON."
@@ -56,6 +59,7 @@ def get_extraction_prompt():
 def process_resume_file(file_path, llm, extraction_prompt, load_document_content_func):
     """
     Reads a raw resume file, extracts structured data using LLM, and returns it.
+    Updated to handle new 'email_id' and 'phone_number' fields.
     """
     raw_text = load_document_content_func(file_path)
     if raw_text is None or not raw_text.strip():
@@ -86,41 +90,45 @@ def process_resume_file(file_path, llm, extraction_prompt, load_document_content
         except json.JSONDecodeError as e:
             print(f"    WARNING: JSONDecodeError for {os.path.basename(file_path)}. Error: {e}")
             print(f"    Raw LLM output causing error (first 500 chars): {cleaned_json_string[:500]}...")
-            # Simple JSON healing: if it looks like it's cut off at the end, try adding '}'
             if not cleaned_json_string.endswith('}'):
                 print("    Attempting to heal JSON by adding '}'...")
                 try:
                     extracted_data = json.loads(cleaned_json_string + '}')
                 except json.JSONDecodeError:
                     print("    JSON healing failed. Returning None.")
-                    return None # Return None if parsing still fails
+                    return None
             else:
-                return None # If it's not a simple missing brace, return None
+                return None
 
         # Clean up "Not Found" or empty values for better handling
-        for key, value in extracted_data.items():
-            if value == "Not Found":
-                extracted_data[key] = None
-            elif isinstance(value, list) and not value:
-                extracted_data[key] = []
-            elif value is None:
+        # Also ensure 'email_id' and 'phone_number' are handled
+        fields_to_check = ['name', 'department', 'experience', 'education', 'email_id', 'phone_number']
+        for key in fields_to_check:
+            if key in extracted_data and (extracted_data[key] == "Not Found" or extracted_data[key] is None or (isinstance(extracted_data[key], str) and extracted_data[key].strip() == '')):
                 extracted_data[key] = None
             
-            # For 'experience' and 'education' which are now forced to be single strings,
-            # if the LLM still returns a list, convert it to a string.
-            if key in ['experience', 'education'] and isinstance(value, list):
-                extracted_data[key] = " ".join(map(str, value)) if value else None
-            # Ensure skills is a list of strings
-            if key == 'skills':
-                if isinstance(value, str):
-                    extracted_data[key] = [s.strip() for s in value.split(',') if s.strip()] if value != "Not Found" else []
-                elif not isinstance(value, list):
-                    extracted_data[key] = []
+        # For 'experience' and 'education' which are now forced to be single strings,
+        # if the LLM still returns a list, convert it to a string.
+        for key in ['experience', 'education']:
+            if key in extracted_data and isinstance(extracted_data[key], list):
+                extracted_data[key] = " ".join(map(str, extracted_data[key])) if extracted_data[key] else None
+        
+        # Ensure skills is a list of strings
+        if 'skills' in extracted_data:
+            value = extracted_data['skills']
+            if isinstance(value, str):
+                extracted_data['skills'] = [s.strip() for s in value.split(',') if s.strip()] if value != "Not Found" else []
+            elif not isinstance(value, list):
+                extracted_data['skills'] = []
+
 
         # Generate a simple ID for the profile, useful for tracking
         if 'id' not in extracted_data or not extracted_data['id']:
              extracted_data['id'] = os.path.basename(file_path).split('.')[0] # Use filename as ID
         
+        # Remove the old 'contact_info' if it somehow still exists from an old prompt/model behavior
+        extracted_data.pop('contact_info', None)
+
         print(f"  Successfully extracted data from {os.path.basename(file_path)}.")
         return extracted_data
 
