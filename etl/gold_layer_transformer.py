@@ -1,28 +1,29 @@
 import pandas as pd
 import numpy as np
 import re # For phone number cleaning
+import uuid # For generating unique group IDs
 
 def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     """
     Transforms a list of silver-layer structured employee profiles into a gold-layer
-    Pandas DataFrame, performing cleaning and normalization, and updated for
-    'email_id' and 'phone_number' fields.
+    Pandas DataFrame, performing cleaning and normalization, and ANNOTATING duplicates
+    rather than dropping or merging them.
     """
-    print("\nStarting gold layer transformation...")
+    print("\nStarting gold layer transformation (annotating duplicates)...")
     if not structured_profiles:
         print("No structured profiles to transform. Returning empty DataFrame.")
         return pd.DataFrame()
 
     df = pd.DataFrame(structured_profiles)
 
-    # 1. Clean & Normalize
+    # 1. Initial Cleaning & Normalization (applies to individual records)
     print("  Standardizing job titles...")
     if 'title' in df.columns:
         df['title'] = df['title'].astype(str).str.lower().str.strip().replace('not found', np.nan)
     
     print("  Normalizing skill names...")
     if 'skills' in df.columns:
-        df['skills'] = df['skills'].apply(lambda x: [s.lower().strip() for s in x] if isinstance(x, list) else ([str(x).lower().strip()] if isinstance(x, str) and x.strip() and x != "Not Found" else []))
+        df['skills'] = df['skills'].apply(lambda x: [s.lower().strip() for s in x] if isinstance(x, list) else ([str(x).lower().strip()] if isinstance(x, str) and str(x).strip() and str(x).lower() != "not found" else []))
         
         skill_normalization_map = {
             'python3': 'python', 'aws cloud': 'aws', 'ml': 'machine learning',
@@ -47,65 +48,116 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
         df['phone_number'] = df['phone_number'].replace('', np.nan) # Replace empty strings with NaN
 
 
-    print("  Filling missing fields...")
-    # Fill None/NaN values with "Unknown" for string fields or appropriate defaults
-    string_cols = ['name', 'department', 'experience', 'education', 'email_id', 'phone_number'] # Include new contact fields
-    for col in string_cols:
-        if col in df.columns:
-            # Only fill if the column has NaN/None values, otherwise it might convert valid data
-            if df[col].isnull().any():
-                df[col] = df[col].fillna("Unknown").astype(str).str.strip()
-            else: # Ensure type is string even if no NaNs
-                df[col] = df[col].astype(str).str.strip()
-
-
-    # Fix: Correctly assign fallback ID for missing 'id' values
+    # Fill missing fields to ensure consistent grouping keys
+    print("  Filling missing fields for consistent grouping...")
+    
+    # Corrected: Use .loc with a boolean mask for ID generation
     if 'id' in df.columns:
-        # Create a Series of fallback IDs only for the rows where 'id' is currently missing
-        missing_id_mask = df['id'].isna()
+        # Corrected line: Added .str.lower() to ensure element-wise operation
+        missing_id_mask = df['id'].isna() | \
+                          (df['id'].astype(str).str.strip().str.lower() == 'not found') | \
+                          (df['id'].astype(str).str.strip() == '')
         if missing_id_mask.any():
             df.loc[missing_id_mask, 'id'] = df.loc[missing_id_mask].index.astype(str) + '_generated_id'
         df['id'] = df['id'].astype(str).str.strip() # Ensure all IDs are string and stripped
+    else:
+        # If 'id' column doesn't exist, create it with generated IDs
+        df['id'] = df.index.astype(str) + '_generated_id'
+        print("    'id' column not found, generated new IDs based on index.")
+
+
+    # Fill remaining string columns with "Unknown" for consistency
+    string_cols_to_fill = ['name', 'department', 'experience', 'education', 'phone_number', 'email_id']
+    for col in string_cols_to_fill:
+        if col in df.columns:
+            # Only fill if the column has NaN/None values or "not found" strings, otherwise it might convert valid data
+            if df[col].isnull().any() or (df[col].astype(str).str.lower() == 'not found').any() or (df[col].astype(str).str.strip() == '').any():
+                df[col] = df[col].replace('Not Found', np.nan).fillna("Unknown").astype(str).str.strip()
+            else: # Ensure type is string even if no NaNs/unknowns
+                df[col] = df[col].astype(str).str.strip()
+
+
+    # 2. Identify and Annotate Duplicate Profiles
+    print("  Identifying and annotating duplicate profiles...")
     
-    # NEW: Deduplicate based on email_id primarily
-    print("  Deduplicating profiles (prioritizing email_id for uniqueness)...")
-    initial_rows = len(df)
+    # Create primary and secondary grouping keys
+    # Use '_raw_email_key' to ensure 'Unknown' is treated as a distinct group for grouping
+    df['_primary_dedupe_key'] = df['email_id'].apply(lambda x: x if x and x != 'Unknown' else np.nan) # Use np.nan for unknown emails
+    df['_secondary_dedupe_key'] = df['name'] + '__' + df['phone_number'] # Combine name and phone for secondary
+
+
+    # Sort to ensure consistent "master" record selection for each group
+    # Prioritize valid email_id, then name, then original_filename
+    # na_position='last' puts np.nan (unknown email) at the end, making groups with emails processed first
+    df.sort_values(by=['_primary_dedupe_key', '_secondary_dedupe_key', '_original_filename'], na_position='last', inplace=True)
+    df = df.reset_index(drop=True) # Reset index after sorting to avoid issues with loc/iloc
+
+    # Initialize new annotation columns
+    df['_is_master_record'] = False
+    df['_duplicate_group_id'] = None # Will store UUID for the group
+    df['_duplicate_count'] = 1 # Default to 1 (itself) for unique records
+    df['_associated_original_filenames'] = None # Will store list of all filenames in a group
+    df['_associated_ids'] = None # Will store list of all original 'id's in a group
     
-    # First, handle duplicates where email_id is present and valid
-    # Ensure 'email_id' column exists and has non-NA values before attempting
-    if 'email_id' in df.columns and df['email_id'].notna().any():
-        # Temporarily filter out 'Unknown' or NaN emails for this primary deduplication pass
-        df_with_email = df[df['email_id'].notna() & (df['email_id'] != 'unknown')].copy()
-        df_no_email = df[df['email_id'].isna() | (df['email_id'] == 'unknown')].copy()
+    processed_indices = set() # To keep track of rows already assigned to a group ID
 
-        if not df_with_email.empty:
-            df_with_email.sort_values(by='email_id', inplace=True) # Optional: sort for consistent 'first' pick
-            df_with_email.drop_duplicates(subset=['email_id'], keep='first', inplace=True)
-            print(f"  Deduplicated by valid email_id: {len(df_with_email)} records remaining.")
-        else:
-            print("  No valid email IDs found for primary deduplication.")
-        
-        # Then, for remaining records without a unique email_id, use a combination of name and original filename
-        # This catches cases where email might be missing or generic
-        if not df_no_email.empty:
-            df_no_email.drop_duplicates(subset=['name', '_original_filename'], keep='first', inplace=True)
-            print(f"  Deduplicated remaining records by name/filename: {len(df_no_email)} records.")
-        
-        # Concatenate back the two dataframes
-        df = pd.concat([df_with_email, df_no_email]).reset_index(drop=True)
-
-    else: # Fallback if no email_id column or no non-NA emails at all
-        print("  No email_id column or no valid email IDs present. Deduplicating by name and original filename.")
-        df.drop_duplicates(subset=['name', '_original_filename'], keep='first', inplace=True)
+    # Group by primary key (email_id) first
+    # This loop will assign group IDs to profiles with valid emails
+    # And to profiles with identical name/phone, even if email is unknown
     
-    print(f"  Final deduplication complete. {len(df)} unique profiles remain (from {initial_rows} initial).")
+    # Group by the most reliable identifier first: valid email_id
+    email_groups = df.groupby('_primary_dedupe_key', dropna=False) # Keep NaN groups
+    
+    for email_key, group_by_email in email_groups:
+        if pd.isna(email_key): # This group contains profiles with unknown/missing email_id
+            # For records with unknown/missing email, group further by secondary key (name+phone)
+            secondary_groups = group_by_email.groupby('_secondary_dedupe_key', dropna=False) # Keep NaN groups
+            for sec_key, group_by_sec_key in secondary_groups:
+                # Only process if this group hasn't been processed via a different path already
+                if not group_by_sec_key.index.difference(list(processed_indices)).empty:
+                    master_idx = group_by_sec_key.index[0] # The first record in this sub-group will be the master
+                    group_id = str(uuid.uuid4())
+                    
+                    df.loc[master_idx, '_is_master_record'] = True
+                    df.loc[group_by_sec_key.index, '_duplicate_group_id'] = group_id
+                    df.loc[master_idx, '_duplicate_count'] = len(group_by_sec_key)
+                    df.loc[master_idx, '_associated_original_filenames'] = group_by_sec_key['_original_filename'].tolist()
+                    df.loc[master_idx, '_associated_ids'] = group_by_sec_key['id'].tolist()
+                    processed_indices.update(group_by_sec_key.index)
+        else: # This group contains profiles with a known email_id
+            # Only process if this group hasn't been processed via a different path already
+            if not group_by_email.index.difference(list(processed_indices)).empty:
+                master_idx = group_by_email.index[0] # The first record in this group will be the master
+                group_id = str(uuid.uuid4())
+                
+                df.loc[master_idx, '_is_master_record'] = True
+                df.loc[group_by_email.index, '_duplicate_group_id'] = group_id
+                df.loc[master_idx, '_duplicate_count'] = len(group_by_email)
+                df.loc[master_idx, '_associated_original_filenames'] = group_by_email['_original_filename'].tolist()
+                df.loc[master_idx, '_associated_ids'] = group_by_email['id'].tolist()
+                processed_indices.update(group_by_email.index)
+    
+    # Final pass to ensure any remaining un-grouped records get a unique group ID and are marked as master
+    # This handles edge cases where single records might not fit perfectly into initial grouping criteria
+    for idx in df.index:
+        if idx not in processed_indices:
+            df.loc[idx, '_duplicate_group_id'] = str(uuid.uuid4())
+            df.loc[idx, '_is_master_record'] = True
+            df.loc[idx, '_duplicate_count'] = 1 # Explicitly set for single records
+            df.loc[idx, '_associated_original_filenames'] = [df.loc[idx, '_original_filename']]
+            df.loc[idx, '_associated_ids'] = [df.loc[idx, 'id']]
 
 
-    # 2. Enrich (Optional - Examples)
+    # Drop temporary grouping keys
+    df.drop(columns=['_primary_dedupe_key', '_secondary_dedupe_key'], errors='ignore', inplace=True)
+
+    print(f"  Annotation complete. Total records: {len(df)}.")
+
+    # 3. Enrich (Optional - Examples)
     print("  Adding optional enrichment (e.g., job level tags)...")
     if 'title' in df.columns:
         def assign_job_level(title):
-            if pd.isna(title) or title == "Unknown": return 'Unknown' # Handle explicit "Unknown" from fillna
+            if pd.isna(title) or title == "Unknown": return 'Unknown'
             title = str(title).lower()
             if 'senior' in title or 'lead' in title or 'principal' in title: return 'Senior'
             elif 'junior' in title or 'associate' in title or 'entry' in title: return 'Junior'

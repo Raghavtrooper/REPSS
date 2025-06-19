@@ -3,7 +3,7 @@ import sys
 import os
 import pandas as pd
 import json
-import re # For phone number extraction from query
+import re
 from pydantic import BaseModel, Field
 
 # Add project root to sys.path (handled by run_app.py, but kept for standalone testing)
@@ -18,7 +18,17 @@ from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # Import modules from the current project structure
-from shared.config import MAX_HISTORY_MESSAGES, OLLAMA_MODEL, GOLD_LAYER_PARQUET_FILE
+# Expecting MAX_HISTORY_MESSAGES, OLLAMA_MODEL, GOLD_LAYER_PARQUET_FILE from shared.config
+try:
+    from shared.config import MAX_HISTORY_MESSAGES, OLLAMA_MODEL, GOLD_LAYER_PARQUET_FILE
+except ImportError:
+    # Fallback if shared.config is not available or missing variables (for standalone testing)
+    print("Warning: shared/config.py not found or incomplete. Using default values.")
+    MAX_HISTORY_MESSAGES = 10  # Default value if not from config
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2") # Default model if not from config
+    GOLD_LAYER_PARQUET_FILE = os.path.join(project_root, "data", "gold_layer.parquet")
+
+
 from app.rag_chain import get_rag_chain
 from app.vector_utils import get_vectorstore
 from app.ui_components import clear_chat_callback
@@ -52,8 +62,8 @@ class FilterConditions(BaseModel):
     education_level: str | None = Field(default=None, description="Education level (e.g., Bachelor's, Master's, PhD).")
     title: str | None = Field(default=None, description="Job title or role mentioned in the query.")
     department: str | None = Field(default=None, description="Department mentioned in the query.")
-    email_id: str | None = Field(default=None, description="Specific email address mentioned in the query.") # NEW FIELD
-    phone_number: str | None = Field(default=None, description="Specific phone number mentioned in the query.") # NEW FIELD
+    email_id: str | None = Field(default=None, description="Specific email address mentioned in the query.")
+    phone_number: str | None = Field(default=None, description="Specific phone number mentioned in the query.")
 
 def parse_query_for_filters(query: str, llm: Ollama) -> FilterConditions:
     """
@@ -103,7 +113,7 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
     """
     Applies extracted filter conditions to the gold layer DataFrame and converts 
     matching records into LangChain Document objects.
-    Updated filtering for email_id and phone_number.
+    Now works with all records, including duplicates.
     """
     print("Applying structured filters to gold layer data...")
     filtered_df = gold_df.copy()
@@ -117,6 +127,7 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
 
     if filters.experience_years_min is not None:
         if 'experience' in filtered_df.columns:
+            # Need to re-extract numerical experience as it's a string in gold layer
             filtered_df['experience_years_num'] = filtered_df['experience'].astype(str).str.extract(r'(\d+)\s*year').astype(float)
             filtered_df = filtered_df[
                 (filtered_df['experience_years_num'].notna()) & 
@@ -149,7 +160,7 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
             ]
         print(f"  Filtered by department '{filters.department}': {len(filtered_df)} records remaining.")
     
-    # NEW: Filter by email_id
+    # Filter by email_id
     if filters.email_id:
         filter_email_lower = filters.email_id.lower().strip()
         if 'email_id' in filtered_df.columns:
@@ -158,9 +169,8 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
             ]
         print(f"  Filtered by email '{filters.email_id}': {len(filtered_df)} records remaining.")
 
-    # NEW: Filter by phone_number
+    # Filter by phone_number
     if filters.phone_number:
-        # Clean the filter phone number to match the cleaned format in the gold layer
         cleaned_filter_phone = re.sub(r'[^\d+]', '', filters.phone_number).strip()
         if 'phone_number' in filtered_df.columns:
             filtered_df = filtered_df[
@@ -170,22 +180,29 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
 
 
     # Convert filtered DataFrame rows to LangChain Document objects
-    # Combine relevant fields into page_content for LLM context
+    # Include new duplicate metadata in content and metadata
     documents = []
     for _, row in filtered_df.iterrows():
-        # Create a concise summary for the document content, including new fields
-        content = f"Name: {row.get('name', 'Unknown')}\n" \
+        # Include a note about duplicates in the page_content for LLM awareness
+        duplicate_status = ""
+        if row.get('_is_master_record') and row.get('_duplicate_count', 1) > 1:
+            duplicate_status = f" (NOTE: This person has {row['_duplicate_count']} associated resumes. Group ID: {row['_duplicate_group_id']})"
+        elif not row.get('_is_master_record') and row.get('_duplicate_group_id'):
+            duplicate_status = f" (NOTE: This is an associated resume for a person with multiple entries. Group ID: {row['_duplicate_group_id']})"
+
+
+        content = f"Name: {row.get('name', 'Unknown')}{duplicate_status}\n" \
                   f"Title: {row.get('title', 'Unknown')}\n" \
                   f"Department: {row.get('department', 'Unknown')}\n" \
                   f"Experience: {row.get('experience', 'Unknown')}\n" \
                   f"Skills: {', '.join(row['skills']) if isinstance(row.get('skills'), list) else 'Unknown'}\n" \
                   f"Education: {row.get('education', 'Unknown')}\n" \
                   f"Email: {row.get('email_id', 'Unknown')}\n" \
-                  f"Phone: {row.get('phone_number', 'Unknown')}" # New line for phone
+                  f"Phone: {row.get('phone_number', 'Unknown')}"
         
         # Add all original row data as metadata
         metadata = row.to_dict()
-        metadata.pop('skills', None) # Skills are in content, can be omitted from metadata if too long
+        metadata.pop('skills', None)
         
         documents.append(Document(page_content=content, metadata=metadata))
     
@@ -195,7 +212,7 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
 
 def main():
     st.set_page_config(layout="centered", page_title="Employee Profile AI Retriever")
-    st.title("👨‍💼 Employee Profile AI Retriever")
+    st.title("Employee Profile AI Retriever") # Corrected title
     st.markdown("Ask me anything about employee profiles in the organization! Try asking for 'Python developers with 5 years experience', 'someone from HR with a Master\'s degree', or 'the person with email jane.doe@example.com'.")
 
     if "messages" not in st.session_state:
@@ -220,6 +237,7 @@ def main():
 
         formatted_chat_history = []
         history_to_process = st.session_state.messages[:-1]
+        # Using MAX_HISTORY_MESSAGES for context
         limited_history = history_to_process[-MAX_HISTORY_MESSAGES:]
 
         for msg in limited_history:
@@ -237,10 +255,7 @@ def main():
                     has_filters = any(
                         getattr(extracted_filters, field) not in (None, [], '') 
                         for field in extracted_filters.model_fields.keys()
-                        if field not in ['skills', 'experience_years_min'] # Exclude skills/exp for has_filters check if they are often empty
                     )
-                    # A more robust check for 'has_filters' might be needed depending on your data
-                    # For example, if you consider a query with only skills as a "filter query"
 
                     structured_filter_docs = []
                     if has_filters and not gold_df.empty:
@@ -252,6 +267,7 @@ def main():
                             
                             combined_context_docs = structured_filter_docs + retrieved_docs_from_vectorstore
                             
+                            # Deduplicate documents based on their original 'id' to prevent exact document duplication
                             seen_ids = set()
                             deduplicated_context = []
                             for doc in combined_context_docs:
@@ -259,7 +275,7 @@ def main():
                                 if doc_id and doc_id not in seen_ids:
                                     deduplicated_context.append(doc)
                                     seen_ids.add(doc_id)
-                                elif not doc_id:
+                                elif not doc_id: # Fallback for docs without an ID, though gold layer should always have one now
                                     if doc.page_content not in [d.page_content for d in deduplicated_context]:
                                         deduplicated_context.append(doc)
                             
@@ -288,7 +304,15 @@ def main():
                         st.subheader("Raw Context Sent to LLM:")
                         if response.get("context"):
                             for i, doc in enumerate(response["context"]):
-                                st.markdown(f"**Document {i+1} (ID: {doc.metadata.get('id', 'N/A')}, Name: {doc.metadata.get('name', 'N/A')}, Title: {doc.metadata.get('title', 'N/A')}, Email: {doc.metadata.get('email_id', 'N/A')}, Phone: {doc.metadata.get('phone_number', 'N/A')}):**") # Updated display
+                                # Updated display to show new metadata
+                                metadata_str = ""
+                                if doc.metadata.get('_duplicate_count', 1) > 1:
+                                    status = "Master" if doc.metadata.get('_is_master_record') else "Associated"
+                                    metadata_str += f", Duplicate Group: {doc.metadata.get('_duplicate_group_id', 'N/A')[:8]} ({status}, Count: {doc.metadata.get('_duplicate_count')})"
+                                    if doc.metadata.get('_associated_original_filenames'):
+                                        metadata_str += f", Other Files: {', '.join(doc.metadata['_associated_original_filenames'])}"
+
+                                st.markdown(f"**Document {i+1} (ID: {doc.metadata.get('id', 'N/A')}, Name: {doc.metadata.get('name', 'N/A')}, Title: {doc.metadata.get('title', 'N/A')}, Email: {doc.metadata.get('email_id', 'N/A')}, Phone: {doc.metadata.get('phone_number', 'N/A')}{metadata_str}):**")
                                 st.text(doc.page_content)
                                 st.markdown(f"**Metadata:**")
                                 st.json(doc.metadata)
@@ -305,7 +329,7 @@ def main():
 
     with st.sidebar:
         st.header("Admin Tools")
-        st.markdown("The vector database is managed by the ETL process. If you need to update or reset it, run the ETL script.")
+        st.markdown("The vector database and gold layer are managed by the ETL process.")
         st.markdown(f"**Run `python run_etl.py` to build/rebuild the vector database and gold layer.**")
         
         st.button("Clear Chat", on_click=clear_chat_callback)
