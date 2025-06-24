@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.documents import Document
 from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_community.embeddings import SentenceTransformerEmbeddings # Import embeddings
 
 # Import modules from the current project structure
 # Expecting MAX_HISTORY_MESSAGES, OLLAMA_MODEL, GOLD_LAYER_PARQUET_FILE from shared.config
@@ -70,7 +71,7 @@ def parse_query_for_filters(query: str, llm: Ollama) -> FilterConditions:
     Uses an LLM to extract structured filter conditions from a natural language query.
     Updated prompt for email_id and phone_number.
     """
-    print(f"Parsing query for filters: '{query}'")
+    print(f"Parsing query for filters: '{query}')")
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", """You are an expert at extracting structured filter conditions from user queries about employee profiles.
         Extract relevant keywords for skills, minimum experience in years, education level, job title, department, email address, and phone number.
@@ -209,15 +210,134 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
     print(f"Structured filtering complete. Converted {len(documents)} matching profiles to Documents.")
     return documents
 
+# --- Functions for embedding and re-ranking with penalization ---
+@st.cache_resource(show_spinner=False)
+def get_embedding_function():
+    """Initializes and activates the SentenceTransformerEmbeddings function."""
+    return SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+
+def re_rank_documents(
+    query: str,
+    documents: list[Document],
+    embedding_function: SentenceTransformerEmbeddings,
+    previously_shown_doc_ids: set[str],
+    top_k: int = 7,
+    penalty_factor: float = 0.5 # Factor to reduce score for previously shown documents
+) -> list[Document]:
+    """
+    Re-ranks a list of documents based on similarity to the query, applying a penalty
+    to documents that have been previously shown.
+    """
+    if not documents:
+        return []
+
+    print(f"Re-ranking {len(documents)} documents. Previously shown: {len(previously_shown_doc_ids)}.")
+
+    # 1. Embed the query
+    query_embedding = embedding_function.embed_query(query)
+    query_embedding = np.array(query_embedding).reshape(1, -1)
+
+    # 2. Embed the documents and calculate initial similarity scores
+    doc_embeddings = embedding_function.embed_documents([doc.page_content for doc in documents])
+    doc_embeddings = np.array(doc_embeddings)
+
+    # Calculate cosine similarity between query and each document
+    # Ensure doc_embeddings is 2D
+    if doc_embeddings.ndim == 1:
+        doc_embeddings = doc_embeddings.reshape(1, -1)
+
+    # Handle cases where query_embedding or doc_embeddings might be empty/invalid
+    if query_embedding.shape[0] == 0 or doc_embeddings.shape[0] == 0:
+        print("Warning: Empty embeddings for query or documents during re-ranking. Returning empty list.")
+        return []
+
+    similarity_scores = cosine_similarity(query_embedding, doc_embeddings)[0]
+
+    # 3. Apply penalty
+    penalized_scores = []
+    for i, doc in enumerate(documents):
+        score = similarity_scores[i]
+        doc_id = doc.metadata.get('id')
+
+        if doc_id and doc_id in previously_shown_doc_ids:
+            # Apply penalty: reduce the score
+            penalized_score = score * penalty_factor
+            print(f"  Penalized document {doc_id} (score {score:.4f} -> {penalized_score:.4f})")
+            penalized_scores.append(penalized_score)
+        else:
+            penalized_scores.append(score)
+
+    # 4. Sort documents by penalized scores
+    scored_documents = sorted(
+        zip(penalized_scores, documents),
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    # 5. Return top_k documents
+    final_ranked_docs = [doc for score, doc in scored_documents[:top_k]]
+    print(f"Re-ranking complete. Returning {len(final_ranked_docs)} documents.")
+    return final_ranked_docs
+
+# --- New function to detect "show me more" intent ---
+@st.cache_resource(show_spinner=False)
+def get_show_more_detector(_embedding_function: SentenceTransformerEmbeddings): # Changed parameter name
+    """
+    Pre-computes embeddings for common 'show me more' phrases to detect intent.
+    """
+    show_more_phrases = [
+        "show me more",
+        "next",
+        "more",
+        "tell me more",
+        "next one",
+        "show more",
+        "any others",
+        "what else",
+        "another one",
+        "more profiles", # Added
+        "next profiles", # Added
+        "show more employees" # Added
+    ]
+    phrase_embeddings = _embedding_function.embed_documents(show_more_phrases) # Changed usage
+    return {
+        "phrases": show_more_phrases,
+        "embeddings": np.array(phrase_embeddings),
+        "embedding_function": _embedding_function # Store for use in is_show_more_query
+    }
+
+def is_show_more_query(query: str, detector_data: dict, similarity_threshold: float = 0.6) -> bool:
+    """
+    Checks if a query semantically indicates a "show me more" intent.
+    """
+    query_embedding = detector_data["embedding_function"].embed_query(query)
+    query_embedding = np.array(query_embedding).reshape(1, -1)
+
+    if query_embedding.shape[0] == 0 or detector_data["embeddings"].shape[0] == 0:
+        return False # Cannot compare if embeddings are empty
+
+    similarities = cosine_similarity(query_embedding, detector_data["embeddings"])[0]
+    max_similarity = np.max(similarities)
+
+    print(f"Show me more intent detection: Max similarity for '{query}' is {max_similarity:.4f}")
+    return max_similarity >= similarity_threshold
+
 
 def main():
     st.set_page_config(layout="centered", page_title="Employee Profile AI Retriever")
-    st.title("Employee Profile AI Retriever") # Corrected title
+    st.title("Employee Profile AI Retriever")
     st.markdown("Ask me anything about employee profiles in the organization! Try asking for 'Python developers with 5 years experience', 'someone from HR with a Master\'s degree', or 'the person with email jane.doe@example.com'.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
         st.session_state.messages.append({"role": "assistant", "content": "Hello! I'm ready to help you find information about employees. What are you looking for?"})
+
+    # Initialize session state for previously shown documents
+    if "previously_shown_doc_ids" not in st.session_state:
+        st.session_state.previously_shown_doc_ids = set() # Store unique IDs
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -225,9 +345,19 @@ def main():
 
     # Load global components
     gold_df = load_gold_layer_data()
-    vectorstore_instance = get_vectorstore() 
+    vectorstore_instance = get_vectorstore()
     rag_chain_instance = get_rag_chain(vectorstore_instance)
     ollama_parser_llm = get_ollama_query_parser_llm()
+    embedding_function = get_embedding_function() # Get the embedding function
+    # Pass embedding function to the detector
+    show_more_detector_data = get_show_more_detector(embedding_function)
+
+
+    # Constants for retrieval and re-ranking
+    INITIAL_RETRIEVAL_K = 20 # Fetch more documents than needed for diversity
+    FINAL_LLM_CONTEXT_K = 7 # Number of documents to pass to the LLM after re-ranking/initial fetch
+    PENALTY_FACTOR = 0.5 # Factor to reduce score for previously shown documents
+    SHOW_MORE_SIMILARITY_THRESHOLD = 0.6 # Threshold to detect "show me more" intent
 
 
     if user_query := st.chat_input("Enter your question:"):
@@ -235,9 +365,13 @@ def main():
         with st.chat_message("user"):
             st.markdown(user_query)
 
+        # Detect if the current query is a "show me more" intent
+        current_query_is_show_more = is_show_more_query(user_query.lower(), show_more_detector_data, SHOW_MORE_SIMILARITY_THRESHOLD)
+        print(f"Query '{user_query}' detected as 'show me more' intent: {current_query_is_show_more}")
+
+
         formatted_chat_history = []
         history_to_process = st.session_state.messages[:-1]
-        # Using MAX_HISTORY_MESSAGES for context
         limited_history = history_to_process[-MAX_HISTORY_MESSAGES:]
 
         for msg in limited_history:
@@ -249,46 +383,125 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Searching and generating response..."):
                 try:
-                    # --- Query Refinement (Structured Filtering) ---
                     extracted_filters = parse_query_for_filters(user_query, ollama_parser_llm)
-                    
+
                     has_filters = any(
-                        getattr(extracted_filters, field) not in (None, [], '') 
+                        getattr(extracted_filters, field) not in (None, [], '')
                         for field in extracted_filters.model_fields.keys()
                     )
 
-                    structured_filter_docs = []
+                    final_context_for_llm = []
+                    
                     if has_filters and not gold_df.empty:
                         structured_filter_docs = apply_structured_filters_and_convert_to_docs(gold_df, extracted_filters)
                         if structured_filter_docs:
                             print(f"Query filters applied: {len(structured_filter_docs)} profiles matched by structured criteria.")
-                            
-                            retrieved_docs_from_vectorstore = vectorstore_instance.similarity_search(user_query)
-                            
+
+                            # For structured filtered results, we still combine with vector search 
+                            # to get a broader pool for potential re-ranking, and for semantic richness.
+                            retrieved_docs_from_vectorstore = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
                             combined_context_docs = structured_filter_docs + retrieved_docs_from_vectorstore
-                            
-                            # Deduplicate documents based on their original 'id' to prevent exact document duplication
-                            seen_ids = set()
+
+                            # Deduplicate combined documents based on 'id'
+                            seen_ids_for_dedupe = set() 
                             deduplicated_context = []
                             for doc in combined_context_docs:
                                 doc_id = doc.metadata.get('id')
-                                if doc_id and doc_id not in seen_ids:
+                                if doc_id and doc_id not in seen_ids_for_dedupe:
                                     deduplicated_context.append(doc)
-                                    seen_ids.add(doc_id)
-                                elif not doc_id: # Fallback for docs without an ID, though gold layer should always have one now
+                                    seen_ids_for_dedupe.add(doc_id)
+                                elif not doc_id: 
                                     if doc.page_content not in [d.page_content for d in deduplicated_context]:
                                         deduplicated_context.append(doc)
-                            
-                            final_context_for_llm = deduplicated_context
-                            print(f"Final context for LLM (after structured filter and deduplication): {len(final_context_for_llm)} documents.")
 
-                        else:
-                            print("Structured filters extracted but yielded no results. Falling back to pure vector search.")
-                            final_context_for_llm = vectorstore_instance.similarity_search(user_query)
-                    else:
+                            if current_query_is_show_more:
+                                # Apply re-ranking with penalization for 'show me more' intent
+                                final_context_for_llm = re_rank_documents(
+                                    query=user_query,
+                                    documents=deduplicated_context,
+                                    embedding_function=embedding_function,
+                                    previously_shown_doc_ids=st.session_state.previously_shown_doc_ids,
+                                    top_k=FINAL_LLM_CONTEXT_K,
+                                    penalty_factor=PENALTY_FACTOR
+                                )
+                                # Update previously shown IDs ONLY when re-ranking is applied for 'show more'
+                                for doc in final_context_for_llm:
+                                    doc_id = doc.metadata.get('id')
+                                    if doc_id:
+                                        st.session_state.previously_shown_doc_ids.add(doc_id)
+                            else:
+                                # For initial query with filters, just take top relevant from deduplicated pool
+                                # Sort by original similarity (higher is better)
+                                initial_scores = []
+                                # Only embed query once for this path
+                                current_query_embedding_for_sort = embedding_function.embed_query(user_query)
+                                current_query_embedding_for_sort = np.array(current_query_embedding_for_sort).reshape(1, -1)
+
+                                for doc in deduplicated_context:
+                                    doc_embedding = embedding_function.embed_documents([doc.page_content])[0]
+                                    score = cosine_similarity(current_query_embedding_for_sort, np.array(doc_embedding).reshape(1,-1))[0][0]
+                                    initial_scores.append((score, doc))
+                                sorted_initial_docs = sorted(initial_scores, key=lambda x: x[0], reverse=True)
+                                final_context_for_llm = [doc for score, doc in sorted_initial_docs[:FINAL_LLM_CONTEXT_K]]
+                                
+                                # Reset previously shown IDs for a fresh start on a new topic
+                                st.session_state.previously_shown_doc_ids = set() 
+                                # Add current top results to the set
+                                for doc in final_context_for_llm:
+                                    doc_id = doc.metadata.get('id')
+                                    if doc_id:
+                                        st.session_state.previously_shown_doc_ids.add(doc_id)
+
+                            print(f"Final context for LLM (after structured filter, deduplication, and conditional retrieval): {len(final_context_for_llm)} documents.")
+
+                        else: # Structured filters extracted but yielded no results (empty structured_filter_docs)
+                            print("Structured filters extracted but yielded no results. Proceeding with vector search.")
+                            initial_docs = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
+                            if current_query_is_show_more:
+                                final_context_for_llm = re_rank_documents(
+                                    query=user_query,
+                                    documents=initial_docs,
+                                    embedding_function=embedding_function,
+                                    previously_shown_doc_ids=st.session_state.previously_shown_doc_ids,
+                                    top_k=FINAL_LLM_CONTEXT_K,
+                                    penalty_factor=PENALTY_FACTOR
+                                )
+                                for doc in final_context_for_llm:
+                                    doc_id = doc.metadata.get('id')
+                                    if doc_id:
+                                        st.session_state.previously_shown_doc_ids.add(doc_id)
+                            else:
+                                final_context_for_llm = initial_docs[:FINAL_LLM_CONTEXT_K] # Just take top relevant
+                                st.session_state.previously_shown_doc_ids = set() # Reset for new topic
+                                for doc in final_context_for_llm:
+                                    doc_id = doc.metadata.get('id')
+                                    if doc_id:
+                                        st.session_state.previously_shown_doc_ids.add(doc_id)
+
+                    else: # No filters detected from query, proceed with pure vector search
                         print("No specific filters detected in query or gold layer empty. Performing pure vector search.")
-                        final_context_for_llm = vectorstore_instance.similarity_search(user_query)
-                    # --- End Query Refinement ---
+                        initial_docs = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
+
+                        if current_query_is_show_more:
+                            final_context_for_llm = re_rank_documents(
+                                query=user_query,
+                                documents=initial_docs,
+                                embedding_function=embedding_function,
+                                previously_shown_doc_ids=st.session_state.previously_shown_doc_ids,
+                                top_k=FINAL_LLM_CONTEXT_K,
+                                penalty_factor=PENALTY_FACTOR
+                            )
+                            for doc in final_context_for_llm:
+                                doc_id = doc.metadata.get('id')
+                                if doc_id:
+                                    st.session_state.previously_shown_doc_ids.add(doc_id)
+                        else:
+                            final_context_for_llm = initial_docs[:FINAL_LLM_CONTEXT_K] # Just take top relevant
+                            st.session_state.previously_shown_doc_ids = set() # Reset for new topic
+                            for doc in final_context_for_llm:
+                                doc_id = doc.metadata.get('id')
+                                if doc_id:
+                                    st.session_state.previously_shown_doc_ids.add(doc_id)
 
                     response = rag_chain_instance.invoke({
                         "input": user_query,
@@ -332,8 +545,11 @@ def main():
         st.markdown("The vector database and gold layer are managed by the ETL process.")
         st.markdown(f"**Run `python run_etl.py` to build/rebuild the vector database and gold layer.**")
         
-        st.button("Clear Chat", on_click=clear_chat_callback)
+        # When clearing chat, also clear the previously shown documents
+        if st.button("Clear Chat", on_click=clear_chat_callback):
+             st.session_state.previously_shown_doc_ids = set() # Clear IDs when chat is cleared
 
 
 if __name__ == "__main__":
     main()
+

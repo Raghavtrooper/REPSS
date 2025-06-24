@@ -6,16 +6,14 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.runnables import RunnableLambda
 
 # Import os for os.getenv
-import os # Added this import
+import os
 
 # Import configuration from shared module
-# Expecting OLLAMA_MODEL from shared.config
 try:
     from shared.config import OLLAMA_MODEL
 except ImportError:
-    # Fallback if shared.config is not available or missing variables (for standalone testing)
     print("Warning: shared/config.py not found or incomplete. Using default values.")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2") # Default model if not from config
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
 
 
 @st.cache_resource(show_spinner=False)
@@ -52,7 +50,7 @@ def get_rag_chain(_vectorstore):
     Standalone Question: How many Python developers have AWS experience?
 
     If no relevant chat history is provided, just return the original question."""
-    
+
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", contextualize_q_system_prompt),
@@ -63,10 +61,22 @@ def get_rag_chain(_vectorstore):
 
     # Answer generation prompt: used to generate the final answer from retrieved documents.
     qa_system_prompt = """You are an AI assistant for questions about employee profiles.
-    Use ONLY the following retrieved context to answer the question.
+    Your goal is to help identify suitable employees based on their skills and experience.
+    Use the following retrieved context to answer the question.
     - If the answer is not found in the context, clearly state "I don't have information on that specific detail based on the profiles I have." Do NOT make up answers.
     - Synthesize information from the provided context without repetition.
     - Provide relevant and detailed information.
+
+    When asked to judge or compare proficiency for a role (e.g., "best for architecture planning" or "most charismatic"),
+    you should:
+    1.  **Prioritize direct matches:** Look for explicit mentions of the role or related titles (e.g., "Architect," "System Designer," "Leadership," "Communication") in the provided employee profiles.
+    2.  **Infer from skills and experience:** If direct matches are not found, analyze the listed skills, education, and experience in the provided context and use your general knowledge about what skills and attributes are typically required or highly beneficial for that role or trait.
+        * For example, for "software architecture planning," consider skills like "System Design," "Cloud Architecture," "Microservices," "Scalability," "Enterprise Integration Patterns," "UML," "design patterns," as well as strong foundational programming languages if explicitly mentioned alongside relevant design principles.
+        * For "charismatic," look for skills like "Project Management" (implying communication and coordination), "Team Lead" experience, or even a broad range of skills that suggest adaptability and interaction.
+    3.  **Consider experience and titles:** Factor in years of experience or senior/lead titles if available, as these often correlate with higher proficiency, broader scope, or interpersonal skills.
+    4.  **Acknowledge limitations:** If, even after inference, you cannot confidently identify a "best" candidate or if the information is insufficient, state that your assessment is based on the available data and that further details on project roles or specific contributions would be needed for a definitive judgment.
+    5.  **Summarize findings:** Present the profiles that seem most relevant based on your analysis, briefly explaining *why* you believe their skills are applicable to the requested role or trait.
+    6.  **Avoid Repetition (if diverse options exist):** If you are asked similar questions repeatedly and have already suggested certain profiles, try to identify and suggest other suitable, *unmentioned* profiles from the *provided context*, if they exist and are relevant. Do not force recommendations if no other suitable candidates are present in the context.
 
     Context:
     {context}"""
@@ -79,32 +89,21 @@ def get_rag_chain(_vectorstore):
     )
 
     # Define the document combining chain
-    # This chain will take retrieved documents and format them into the 'context' variable
     document_chain = create_stuff_documents_chain(llm, qa_prompt)
 
     # --- Modified Retrieval Logic ---
-    # Instead of always using _vectorstore.as_retriever(), we will check if 'context' is
-    # explicitly provided in the invoke call from main_app.py.
-    # If 'context' is provided, we use it directly; otherwise, we use the _vectorstore's retriever.
-    
-    # Create a runnable from our custom retriever logic
-    # This allows create_retrieval_chain to still work by treating it as a Runnable
     def custom_retriever_logic(input_dict):
-        # If 'context' is explicitly passed from the caller (main_app.py), use that
         if "context" in input_dict and input_dict["context"] is not None:
-            # Ensure it's a list of Documents or convert if needed (main_app.py already converts)
-            return input_dict["context"] 
+            return input_dict["context"]
         else:
-            # Otherwise, use the standard _vectorstore retriever
             print("  No explicit 'context' provided. Using _vectorstore.as_retriever().")
-            # The input for _vectorstore.as_retriever() is expected to be the query from 'input'
-            return _vectorstore.as_retriever().invoke(input_dict["input"]) 
-    
-    # Wrap the custom logic in a RunnableLambda to make it a Runnable
+            return _vectorstore.as_retriever().invoke(input_dict["input"])
+
     custom_retriever_runnable = RunnableLambda(custom_retriever_logic)
-    
+
     # Create the retrieval chain with our custom runnable retriever
     retrieval_chain = create_retrieval_chain(custom_retriever_runnable, document_chain)
 
     print("RAG chain initialized successfully.")
     return retrieval_chain
+
