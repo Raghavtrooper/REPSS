@@ -32,7 +32,7 @@ except ImportError:
 
 from app.rag_chain import get_rag_chain
 from app.vector_utils import get_vectorstore
-from app.ui_components import clear_chat_callback
+from app.ui_components import clear_chat_callback, display_profile_details # Import the new function
 
 # --- Global Components ---
 @st.cache_data
@@ -513,27 +513,16 @@ def main():
                     st.markdown(llm_answer)
                     st.session_state.messages.append({"role": "assistant", "content": llm_answer})
 
-                    with st.expander("Advanced Debugging: Retrieved Context"):
-                        st.subheader("Raw Context Sent to LLM:")
+                    with st.expander("See Retrieved Profiles"): # Renamed for clarity
                         if response.get("context"):
                             for i, doc in enumerate(response["context"]):
-                                # Updated display to show new metadata
-                                metadata_str = ""
-                                if doc.metadata.get('_duplicate_count', 1) > 1:
-                                    status = "Master" if doc.metadata.get('_is_master_record') else "Associated"
-                                    metadata_str += f", Duplicate Group: {doc.metadata.get('_duplicate_group_id', 'N/A')[:8]} ({status}, Count: {doc.metadata.get('_duplicate_count')})"
-                                    if doc.metadata.get('_associated_original_filenames'):
-                                        metadata_str += f", Other Files: {', '.join(doc.metadata['_associated_original_filenames'])}"
-
-                                st.markdown(f"**Document {i+1} (ID: {doc.metadata.get('id', 'N/A')}, Name: {doc.metadata.get('name', 'N/A')}, Title: {doc.metadata.get('title', 'N/A')}, Email: {doc.metadata.get('email_id', 'N/A')}, Phone: {doc.metadata.get('phone_number', 'N/A')}{metadata_str}):**")
-                                st.text(doc.page_content)
-                                st.markdown(f"**Metadata:**")
-                                st.json(doc.metadata)
+                                # Call display_profile_details with use_inner_expanders=False
+                                display_profile_details(doc.metadata, use_inner_expanders=False) 
                         else:
                             st.info("No relevant documents were retrieved for this query. This might mean your query is too specific or not semantically close to any profiles.")
                         
-                        st.subheader("Full RAG Chain Response Object:")
-                        st.json(response)
+                        # Removed "Full RAG Chain Response Object:" and st.json(response) for cleaner output
+
                 except Exception as e:
                     error_message = f"An unexpected error occurred during RAG chain invocation: {e}"
                     st.error(error_message)
@@ -552,4 +541,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
