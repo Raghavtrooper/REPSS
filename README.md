@@ -7,6 +7,9 @@ Project Structure
 
 ```text
 .
+|──  api/
+|   |── api_helper.py        # Functions provided for the rest_controller
+|   └── rest_controller.py   # Server module
 ├── app/
 │   ├── main_app.py           # Main Streamlit application
 │   ├── rag_chain.py          # Defines the RAG chain using LangChain
@@ -27,6 +30,7 @@ Project Structure
 ├── employee_profiles.json    # (Generated) Silver layer: structured data after LLM extraction
 ├── gold_employee_profiles.parquet # (Generated) Gold layer: cleaned, enriched, and annotated data
 ├── chroma_db/                # (Generated) Persistent directory for ChromaDB vector store
+|── run_api.py                # Server launcher
 ├── run_app.py                # Script to launch the Streamlit application
 └── run_etl.py                # Script to execute the ETL pipeline
 ```
