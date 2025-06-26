@@ -1,4 +1,3 @@
-import streamlit as st
 from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_retrieval_chain
@@ -16,7 +15,6 @@ except ImportError:
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
 
 
-@st.cache_resource(show_spinner=False)
 def get_rag_chain(_vectorstore):
     """
     Initializes and returns the RAG (Retrieval Augmented Generation) chain.
@@ -38,7 +36,7 @@ def get_rag_chain(_vectorstore):
     Example 1:
     Chat History:
     Human: Who is John Doe?
-    AI: John Doe is a Senior Software Engineer in the Engineering department.
+    AI: John Doe is a Senior Software Engineer.
     Human: What are his skills?
     Standalone Question: What are John Doe's skills?
 
@@ -63,17 +61,19 @@ def get_rag_chain(_vectorstore):
     qa_system_prompt = """You are an AI assistant for questions about employee profiles.
     Your goal is to help identify suitable employees based on their skills and experience.
     Use the following retrieved context to answer the question.
+    The context will contain information such as name, email, phone, location, objective, skills,
+    qualifications summary, experience summary, and whether they have a photo.
     - If the answer is not found in the context, clearly state "I don't have information on that specific detail based on the profiles I have." Do NOT make up answers.
     - Synthesize information from the provided context without repetition.
     - Provide relevant and detailed information.
 
     When asked to judge or compare proficiency for a role (e.g., "best for architecture planning" or "most charismatic"),
     you should:
-    1.  **Prioritize direct matches:** Look for explicit mentions of the role or related titles (e.g., "Architect," "System Designer," "Leadership," "Communication") in the provided employee profiles.
-    2.  **Infer from skills and experience:** If direct matches are not found, analyze the listed skills, education, and experience in the provided context and use your general knowledge about what skills and attributes are typically required or highly beneficial for that role or trait.
+    1.  **Prioritize direct matches:** Look for explicit mentions of the role or related titles (e.g., "Architect," "System Designer," "Leadership," "Communication") within the 'experience_summary' and 'objective' fields in the provided employee profiles.
+    2.  **Infer from skills and experience:** If direct matches are not found, analyze the listed skills, 'qualifications_summary', and 'experience_summary' in the provided context and use your general knowledge about what skills and attributes are typically required or highly beneficial for that role or trait.
         * For example, for "software architecture planning," consider skills like "System Design," "Cloud Architecture," "Microservices," "Scalability," "Enterprise Integration Patterns," "UML," "design patterns," as well as strong foundational programming languages if explicitly mentioned alongside relevant design principles.
-        * For "charismatic," look for skills like "Project Management" (implying communication and coordination), "Team Lead" experience, or even a broad range of skills that suggest adaptability and interaction.
-    3.  **Consider experience and titles:** Factor in years of experience or senior/lead titles if available, as these often correlate with higher proficiency, broader scope, or interpersonal skills.
+        * For "charismatic," look for indicators within 'experience_summary' or 'objective' such as "Project Management" (implying communication and coordination), "Team Lead" experience, or even a broad range of skills that suggest adaptability and interaction.
+    3.  **Consider information in summaries:** Factor in details found in `experience_summary` and `qualifications_summary` to gauge overall suitability.
     4.  **Acknowledge limitations:** If, even after inference, you cannot confidently identify a "best" candidate or if the information is insufficient, state that your assessment is based on the available data and that further details on project roles or specific contributions would be needed for a definitive judgment.
     5.  **Summarize findings:** Present the profiles that seem most relevant based on your analysis, briefly explaining *why* you believe their skills are applicable to the requested role or trait.
     6.  **Avoid Repetition (if diverse options exist):** If you are asked similar questions repeatedly and have already suggested certain profiles, try to identify and suggest other suitable, *unmentioned* profiles from the *provided context*, if they exist and are relevant. Do not force recommendations if no other suitable candidates are present in the context.
@@ -106,4 +106,3 @@ def get_rag_chain(_vectorstore):
 
     print("RAG chain initialized successfully.")
     return retrieval_chain
-
