@@ -1,16 +1,8 @@
 import sys
-import os
+from utility import root_to_sys
 
 # --- Add project root to sys.path ---
-# Get the absolute path of the directory where this script (run_etl.py) resides
-current_script_dir = os.path.dirname(os.path.abspath(__file__))
-# The current_script_dir is already the project root
-project_root = current_script_dir 
-
-# Add the project root to sys.path if it's not already there
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-# --- End sys.path modification ---
+project_root = root_to_sys(__file__)
 
 # Now, import the main function from your ETL module
 # This import will now work because the project root is in sys.path

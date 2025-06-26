@@ -1,11 +1,15 @@
-Resume RAG System
+# Resume RAG System
 
 This project implements a Retrieval Augmented Generation (RAG) system for querying employee profiles (resumes). It consists of an ETL (Extract, Transform, Load) pipeline to process raw resume documents into a structured format, enrich them, and store them in a vector database (ChromaDB) and a gold layer (Parquet file). A Streamlit application then uses this data to answer questions about employee skills and profiles using an LLM.
 Project Structure
 
-The project is organized into logical directories to separate concerns:
+### The project is organized into logical directories to separate concerns:
 
+```text
 .
+|──  api/
+|   |── api_helper.py        # Functions provided for the rest_controller
+|   └── rest_controller.py   # Server module
 ├── app/
 │   ├── main_app.py           # Main Streamlit application
 │   ├── rag_chain.py          # Defines the RAG chain using LangChain
@@ -26,11 +30,13 @@ The project is organized into logical directories to separate concerns:
 ├── employee_profiles.json    # (Generated) Silver layer: structured data after LLM extraction
 ├── gold_employee_profiles.parquet # (Generated) Gold layer: cleaned, enriched, and annotated data
 ├── chroma_db/                # (Generated) Persistent directory for ChromaDB vector store
+|── run_api.py                # Server launcher
 ├── run_app.py                # Script to launch the Streamlit application
 └── run_etl.py                # Script to execute the ETL pipeline
+```
 
-Functionality
-ETL Pipeline (etl/)
+## Functionality
+### ETL Pipeline (etl/)
 
 The ETL pipeline is responsible for preparing the data for the RAG system:
 
@@ -46,7 +52,7 @@ The ETL pipeline is responsible for preparing the data for the RAG system:
 
     Orchestration (main_etl.py): This script ties together all the ETL steps, managing the flow from raw documents to the persistent ChromaDB and Gold Layer Parquet file.
 
-RAG Application (app/)
+### RAG Application (app/)
 
 The Streamlit application provides a user interface for interacting with the processed data:
 
@@ -58,7 +64,7 @@ The Streamlit application provides a user interface for interacting with the pro
 
     Vector Utilities (vector_utils.py): Initializes or loads the ChromaDB vector store for the Streamlit application.
 
-Tech Stack
+### Tech Stack
 
     Python 3.x: The primary programming language.
 
@@ -80,7 +86,7 @@ Tech Stack
 
     PyPDFLoader, Docx2txtLoader, TextLoader (from langchain_community): For loading content from various document formats.
 
-Dependencies
+### Dependencies
 
 You can install the Python dependencies using pip and the requirements.txt file (which you would typically generate or create based on the above tech stack).
 
@@ -96,9 +102,11 @@ pandas
 python-dotenv
 minio
 pydantic
+fastapi
+uvicorn
 
-Setup and Running the Project
-Prerequisites
+### Setup and Running the Project
+### Prerequisites
 
     Python 3.x: Ensure Python is installed.
 
@@ -113,7 +121,7 @@ Prerequisites
       -e "MINIO_ROOT_PASSWORD=password123" \
       quay.io/minio/minio server /data --console-address ":9001"
 
-Configuration
+### Configuration
 
     Create a .env file in the project root with your configuration:
 
@@ -127,32 +135,43 @@ Configuration
 
     Adjust values as per your setup. MINIO_SECURE should be True if using HTTPS.
 
-Steps to Run
+### Steps to Run
 
-    Install Dependencies:
+    1. Install Dependencies:
 
+    ```bash
     pip install -r requirements.txt
+    ```
 
     (Assuming you create a requirements.txt from the listed dependencies)
 
-    Place Raw Resumes:
+    2. Place Raw Resumes:
     Put your PDF, DOCX, or TXT resume files into the raw_resumes/ directory.
 
-    Run the ETL Pipeline:
+    3. Run the ETL Pipeline:
     This step processes the raw resumes, extracts data, transforms it, and builds the ChromaDB and Gold Layer Parquet file.
 
+    ```bash
     python run_etl.py
+    ```
 
     You should see console output indicating the progress of extraction, transformation, and ChromaDB creation. This will also upload the gold_employee_profiles.parquet to your MinIO instance.
 
-    Run the Streamlit Application:
+    4. Run the Streamlit Application:
     Once the ETL is complete, launch the RAG application:
 
+    ```bash
     python run_app.py
+    ```
 
     This will open the Streamlit application in your web browser, typically at http://localhost:8501.
 
-Pipeline Flow
+### Sever setup:
+
+* Make sure the server dependencies fastapi, uvicorn and python-multipart are present
+* Simply execute the run_apy.py
+
+### Pipeline Flow
 
     Input: Raw resume files are placed in the raw_resumes/ directory.
 
