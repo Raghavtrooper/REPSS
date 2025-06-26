@@ -1,4 +1,3 @@
-import streamlit as st
 import os
 import shutil
 import time # Still needed for st.cache_resource, but not for reset_triggered_timestamp
@@ -8,7 +7,6 @@ from langchain_community.vectorstores import Chroma
 # Import configuration from shared module
 from shared.config import CHROMA_DB_DIR
 
-@st.cache_resource(show_spinner=False)
 def get_vectorstore():
     """
     Initializes or loads the ChromaDB vector store.
