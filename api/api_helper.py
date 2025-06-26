@@ -7,6 +7,7 @@ from typing import List
 from pathlib import Path
 from pydantic import BaseModel
 from etl.main_etl import main  
+from app.main_app import exe_query
 
 UPLOAD_DIR = Path("raw_resumes")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -24,6 +25,7 @@ def process_query(query: str) -> dict:
             detail="Query string is empty"
         )
     print(query)
+    exe_query(query)
     return {
         "received_query": query,
         "length": len(query)

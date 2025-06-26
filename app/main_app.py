@@ -39,8 +39,7 @@ from app.ui_components import clear_chat_callback, display_profile_details
 # --- Global Components Loading ---
 # These functions are cached to load data/models only once across Streamlit reruns.
 
-@st.cache_data(show_spinner="Loading gold layer data...")
-def load_gold_layer_data_cached():
+def load_gold_layer_data():
     """Loads the gold layer Parquet file into a Pandas DataFrame."""
     if not os.path.exists(GOLD_LAYER_PARQUET_FILE):
         st.error(f"Gold layer data not found at '{GOLD_LAYER_PARQUET_FILE}'.")
@@ -55,24 +54,14 @@ def load_gold_layer_data_cached():
     print(f"Loaded {len(df)} records from gold layer.")
     return df
 
-@st.cache_resource(show_spinner="Initializing LLMs and Embeddings...")
+
 def get_llm_and_embeddings():
     """Initializes and returns Ollama LLM for parsing and embedding function."""
     parser_llm = Ollama(model=OLLAMA_MODEL, temperature=0.0) # Low temperature for consistent JSON output
     embedding_func = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
     return parser_llm, embedding_func
 
-@st.cache_resource(show_spinner="Loading vector store...")
-def get_vectorstore_cached():
-    """Initializes or loads the ChromaDB vector store."""
-    return get_vectorstore()
 
-@st.cache_resource(show_spinner="Initializing RAG chain...")
-def get_rag_chain_cached(_vectorstore):
-    """Initializes and returns the RAG (Retrieval Augmented Generation) chain."""
-    return get_rag_chain(_vectorstore)
-
-@st.cache_resource(show_spinner=False)
 def get_show_more_detector_cached(_embedding_function: SentenceTransformerEmbeddings):
     """Pre-computes embeddings for common 'show me more' phrases to detect intent."""
     show_more_phrases = [
@@ -511,6 +500,117 @@ def display_admin_tools():
              st.session_state.previously_shown_doc_ids = set() # Clear IDs when chat is cleared
 
 
+
+def handle_query_processing_api(user_query, gold_df, vectorstore_instance, rag_chain_instance,
+                            ollama_parser_llm, embedding_function, show_more_detector_data):
+    
+    INITIAL_RETRIEVAL_K = 20
+    FINAL_LLM_CONTEXT_K = 7
+    PENALTY_FACTOR = 0.5
+    SHOW_MORE_SIMILARITY_THRESHOLD = 0.6
+
+    try:
+        
+        current_query_is_show_more = is_show_more_query(user_query.lower(), show_more_detector_data, SHOW_MORE_SIMILARITY_THRESHOLD)
+        print(f"Query '{user_query}' detected as 'show me more' intent: {current_query_is_show_more}")
+
+        extracted_filters = parse_query_for_filters(user_query, ollama_parser_llm)
+        has_filters = any(
+                getattr(extracted_filters, field) not in (None, [], '')
+                for field in extracted_filters.model_fields.keys()
+            )
+        
+        final_context_for_llm = []
+
+        # 3. Determine document retrieval strategy
+        if has_filters and not gold_df.empty:
+            structured_filter_docs = apply_structured_filters_and_convert_to_docs(gold_df, extracted_filters)
+            if structured_filter_docs:
+                print(f"Query filters applied: {len(structured_filter_docs)} profiles matched by structured criteria.")
+                retrieved_docs_from_vectorstore = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
+                combined_context_docs = structured_filter_docs + retrieved_docs_from_vectorstore
+
+                # Deduplicate combined documents based on 'id'
+                seen_ids_for_dedupe = set() 
+                deduplicated_context = []
+                for doc in combined_context_docs:
+                    doc_id = doc.metadata.get('id')
+                    if doc_id and doc_id not in seen_ids_for_dedupe:
+                        deduplicated_context.append(doc)
+                        seen_ids_for_dedupe.add(doc_id)
+                    elif not doc_id: 
+                        if doc.page_content not in [d.page_content for d in deduplicated_context]:
+                            deduplicated_context.append(doc)
+
+                if current_query_is_show_more:
+                    final_context_for_llm = re_rank_documents(
+                        query=user_query,
+                        documents=deduplicated_context,
+                        embedding_function=embedding_function,
+                        previously_shown_doc_ids=st.session_state.previously_shown_doc_ids,
+                        top_k=FINAL_LLM_CONTEXT_K,
+                        penalty_factor=PENALTY_FACTOR
+                    )
+                    for doc in final_context_for_llm:
+                        doc_id = doc.metadata.get('id')
+                        if doc_id:
+                            st.session_state.previously_shown_doc_ids.add(doc_id)
+                else:
+                    initial_scores = []
+                    current_query_embedding_for_sort = embedding_function.embed_query(user_query)
+                    current_query_embedding_for_sort = np.array(current_query_embedding_for_sort).reshape(1, -1)
+
+                    for doc in deduplicated_context:
+                        doc_embedding = embedding_function.embed_documents([doc.page_content])[0]
+                        score = cosine_similarity(current_query_embedding_for_sort, np.array(doc_embedding).reshape(1,-1))[0][0]
+                        initial_scores.append((score, doc))
+                    sorted_initial_docs = sorted(initial_scores, key=lambda x: x[0], reverse=True)
+                    final_context_for_llm = [doc for score, doc in sorted_initial_docs[:FINAL_LLM_CONTEXT_K]]
+                    
+                    for doc in final_context_for_llm:
+                        doc_id = doc.metadata.get('id')
+             
+
+                print(f"Final context for LLM (after structured filter, deduplication, and conditional retrieval): {len(final_context_for_llm)} documents.")
+
+
+        else: # No filters detected from query, proceed with pure vector search
+            print("No specific filters detected in query or gold layer empty. Performing pure vector search.")
+            initial_docs = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
+
+     
+        formatted_chat_history = get_formatted_chat_history()
+        response = rag_chain_instance.invoke({
+            "input": user_query,
+            "chat_history": formatted_chat_history,
+            "context": final_context_for_llm
+        })
+
+        return response("answer")
+
+    except Exception as e:
+        error_message = f"An unexpected error occurred during RAG chain invocation: {e}"
+        st.error(error_message)
+        st.warning(f"Please ensure Ollama is running and the model '{OLLAMA_MODEL}' is pulled and running.")
+        st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+
+
+def exe_query(user_query):
+    # get components
+    gold_df = load_gold_layer_data()
+    vectorstore_instance = get_vectorstore()
+    rag_chain_instance = get_rag_chain(vectorstore_instance)
+    ollama_parser_llm, embedding_function = get_llm_and_embeddings()
+    show_more_detector_data = get_show_more_detector_cached(embedding_function)
+
+    # execute query
+    return handle_query_processing_api(user_query, gold_df, vectorstore_instance, rag_chain_instance,
+                            ollama_parser_llm, embedding_function, show_more_detector_data)
+
+    
+
+
 def main():
     """Main function to run the Streamlit employee profile retriever application."""
     # 1. Setup Streamlit UI
@@ -520,9 +620,9 @@ def main():
     initialize_session_state()
 
     # 3. Load Global Components (cached for efficiency)
-    gold_df = load_gold_layer_data_cached()
-    vectorstore_instance = get_vectorstore_cached()
-    rag_chain_instance = get_rag_chain_cached(vectorstore_instance)
+    gold_df = load_gold_layer_data()
+    vectorstore_instance = get_vectorstore()
+    rag_chain_instance = get_rag_chain(vectorstore_instance)
     ollama_parser_llm, embedding_function = get_llm_and_embeddings()
     show_more_detector_data = get_show_more_detector_cached(embedding_function)
 
