@@ -16,7 +16,7 @@ from etl.chroma_builder import generate_chroma_db
 from etl.minio_utils import get_minio_client, upload_to_minio
 
 def main():
-    print("Starting structured data extraction and embedding generation (supports PDF, DOCX, TXT)...")
+    print("Starting structured data extraction and embedding generation (supports PDF, DOCX, TXT)....")
 
     # Ensure raw_resumes directory exists and possibly add a placeholder if empty
     if not os.path.exists(RAW_RESUMES_DIR):
@@ -106,8 +106,10 @@ def main():
     if new_resume_files_to_process:
         print(f"\nProcessing {len(new_resume_files_to_process)} new or previously unprocessed resumes...")
         for file_path in new_resume_files_to_process:
+            # process_resume_file now handles the tuple from load_document_content and merges metadata
             structured_data = process_resume_file(file_path, llm_for_extraction, extraction_prompt, load_document_content)
             if structured_data:
+                # Add original filename for tracking
                 structured_data['_original_filename'] = os.path.basename(file_path) 
                 newly_extracted_profiles.append(structured_data)
         print(f"Successfully extracted {len(newly_extracted_profiles)} new profiles.")

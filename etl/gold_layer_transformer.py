@@ -8,6 +8,8 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     Transforms a list of silver-layer structured employee profiles into a gold-layer
     Pandas DataFrame, performing cleaning and normalization, and ANNOTATING duplicates
     rather than dropping or merging them.
+    Updated to handle new 'location', 'objective', 'qualifications_summary',
+    'experience_summary', and 'has_photo' fields.
     """
     print("\nStarting gold layer transformation (annotating duplicates)...")
     if not structured_profiles:
@@ -17,10 +19,8 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     df = pd.DataFrame(structured_profiles)
 
     # 1. Initial Cleaning & Normalization (applies to individual records)
-    print("  Standardizing job titles...")
-    if 'title' in df.columns:
-        df['title'] = df['title'].astype(str).str.lower().str.strip().replace('not found', np.nan)
-    
+    # No 'title' or 'department' cleaning needed as they are no longer extracted
+
     print("  Normalizing skill names...")
     if 'skills' in df.columns:
         df['skills'] = df['skills'].apply(lambda x: [s.lower().strip() for s in x] if isinstance(x, list) else ([str(x).lower().strip()] if isinstance(x, str) and str(x).strip() and str(x).lower() != "not found" else []))
@@ -48,12 +48,11 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
         df['phone_number'] = df['phone_number'].replace('', np.nan) # Replace empty strings with NaN
 
 
-    # Fill missing fields to ensure consistent grouping keys
+    # Fill missing fields to ensure consistent grouping keys and output
     print("  Filling missing fields for consistent grouping...")
     
-    # Corrected: Use .loc with a boolean mask for ID generation
+    # Ensure 'id' column is present and cleaned
     if 'id' in df.columns:
-        # Corrected line: Added .str.lower() to ensure element-wise operation
         missing_id_mask = df['id'].isna() | \
                           (df['id'].astype(str).str.strip().str.lower() == 'not found') | \
                           (df['id'].astype(str).str.strip() == '')
@@ -61,20 +60,24 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
             df.loc[missing_id_mask, 'id'] = df.loc[missing_id_mask].index.astype(str) + '_generated_id'
         df['id'] = df['id'].astype(str).str.strip() # Ensure all IDs are string and stripped
     else:
-        # If 'id' column doesn't exist, create it with generated IDs
         df['id'] = df.index.astype(str) + '_generated_id'
         print("    'id' column not found, generated new IDs based on index.")
 
-
     # Fill remaining string columns with "Unknown" for consistency
-    string_cols_to_fill = ['name', 'department', 'experience', 'education', 'phone_number', 'email_id']
+    string_cols_to_fill = ['name', 'location', 'objective', 'email_id', 'phone_number',
+                           'experience_summary', 'qualifications_summary'] # Updated list of string columns
     for col in string_cols_to_fill:
         if col in df.columns:
-            # Only fill if the column has NaN/None values or "not found" strings, otherwise it might convert valid data
             if df[col].isnull().any() or (df[col].astype(str).str.lower() == 'not found').any() or (df[col].astype(str).str.strip() == '').any():
                 df[col] = df[col].replace('Not Found', np.nan).fillna("Unknown").astype(str).str.strip()
             else: # Ensure type is string even if no NaNs/unknowns
                 df[col] = df[col].astype(str).str.strip()
+
+    # Ensure 'has_photo' is a boolean
+    if 'has_photo' in df.columns:
+        df['has_photo'] = df['has_photo'].fillna(False).astype(bool)
+    else:
+        df['has_photo'] = False # Default to False if column is missing
 
 
     # 2. Identify and Annotate Duplicate Profiles
@@ -88,7 +91,6 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
 
     # Sort to ensure consistent "master" record selection for each group
     # Prioritize valid email_id, then name, then original_filename
-    # na_position='last' puts np.nan (unknown email) at the end, making groups with emails processed first
     df.sort_values(by=['_primary_dedupe_key', '_secondary_dedupe_key', '_original_filename'], na_position='last', inplace=True)
     df = df.reset_index(drop=True) # Reset index after sorting to avoid issues with loc/iloc
 
@@ -101,10 +103,6 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     
     processed_indices = set() # To keep track of rows already assigned to a group ID
 
-    # Group by primary key (email_id) first
-    # This loop will assign group IDs to profiles with valid emails
-    # And to profiles with identical name/phone, even if email is unknown
-    
     # Group by the most reliable identifier first: valid email_id
     email_groups = df.groupby('_primary_dedupe_key', dropna=False) # Keep NaN groups
     
@@ -138,7 +136,6 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
                 processed_indices.update(group_by_email.index)
     
     # Final pass to ensure any remaining un-grouped records get a unique group ID and are marked as master
-    # This handles edge cases where single records might not fit perfectly into initial grouping criteria
     for idx in df.index:
         if idx not in processed_indices:
             df.loc[idx, '_duplicate_group_id'] = str(uuid.uuid4())
@@ -154,18 +151,11 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     print(f"  Annotation complete. Total records: {len(df)}.")
 
     # 3. Enrich (Optional - Examples)
-    print("  Adding optional enrichment (e.g., job level tags)...")
-    if 'title' in df.columns:
-        def assign_job_level(title):
-            if pd.isna(title) or title == "Unknown": return 'Unknown'
-            title = str(title).lower()
-            if 'senior' in title or 'lead' in title or 'principal' in title: return 'Senior'
-            elif 'junior' in title or 'associate' in title or 'entry' in title: return 'Junior'
-            else: return 'Mid-level'
-        df['job_level'] = df['title'].apply(assign_job_level)
+    # Removed 'job_level' assignment as 'title' is no longer extracted.
+    print("  No optional enrichment (e.g., job level tags) performed as 'title' is not extracted.")
 
-    # Remove the old 'contact_info' column if it exists from previous ETL runs
-    df.drop(columns=['contact_info'], errors='ignore', inplace=True)
+    # Remove old columns if they exist from previous ETL runs
+    df.drop(columns=['contact_info', 'title', 'department', 'experience', 'education'], errors='ignore', inplace=True)
 
     print("Gold layer transformation complete.")
     return df
