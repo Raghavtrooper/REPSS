@@ -551,10 +551,6 @@ def handle_query_processing_api(user_query, gold_df, vectorstore_instance, rag_c
                         top_k=FINAL_LLM_CONTEXT_K,
                         penalty_factor=PENALTY_FACTOR
                     )
-                    for doc in final_context_for_llm:
-                        doc_id = doc.metadata.get('id')
-                        if doc_id:
-                            st.session_state.previously_shown_doc_ids.add(doc_id)
                 else:
                     initial_scores = []
                     current_query_embedding_for_sort = embedding_function.embed_query(user_query)
@@ -590,10 +586,6 @@ def handle_query_processing_api(user_query, gold_df, vectorstore_instance, rag_c
 
     except Exception as e:
         error_message = f"An unexpected error occurred during RAG chain invocation: {e}"
-        st.error(error_message)
-        st.warning(f"Please ensure Ollama is running and the model '{OLLAMA_MODEL}' is pulled and running.")
-        st.session_state.messages.append({"role": "assistant", "content": error_message})
-
 
 
 def exe_query(user_query):
