@@ -6,7 +6,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERRO
 from typing import List
 from pathlib import Path
 from pydantic import BaseModel
-from ..etl.main_etl import main  
+from etl.main_etl import main  
 
 UPLOAD_DIR = Path("raw_resumes")
 UPLOAD_DIR.mkdir(exist_ok=True)

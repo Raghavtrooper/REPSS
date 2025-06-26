@@ -168,7 +168,7 @@ uvicorn
 
 ### Sever setup:
 
-* Make sure the server dependencies fastapi and uvicorn are present
+* Make sure the server dependencies fastapi, uvicorn and python-multipart are present
 * Simply execute the run_apy.py
 
 ### Pipeline Flow
