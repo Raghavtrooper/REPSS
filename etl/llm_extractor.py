@@ -73,17 +73,23 @@ def process_resume_file(file_path, llm, extraction_prompt, load_document_content
         llm_response = llm.invoke(extraction_prompt.format_messages(resume_text=raw_text))
         
         if hasattr(llm_response, 'content'):
-            extraction_raw_text = llm_response.content
+            extraction_raw_text = llm_response.content # Corrected typo here
         else:
             extraction_raw_text = str(llm_response) # Assume it's a string directly if no .content
 
         # Clean up the raw text to ensure it's valid JSON
         cleaned_json_string = extraction_raw_text.strip()
-        if cleaned_json_string.startswith("```json"):
-            cleaned_json_string = cleaned_json_string[len("```json"):].strip()
-        if cleaned_json_string.endswith("```"):
-            cleaned_json_string = cleaned_json_string[:-len("```")].strip()
         
+        # New robust cleaning: find the first '{' and last '}'
+        start_index = cleaned_json_string.find('{')
+        end_index = cleaned_json_string.rfind('}')
+
+        if start_index != -1 and end_index != -1 and end_index > start_index:
+            cleaned_json_string = cleaned_json_string[start_index : end_index + 1]
+        else:
+            print(f"    WARNING: Could not find valid JSON boundaries for {os.path.basename(file_path)}. Raw LLM output: {cleaned_json_string}")
+            return None
+
         # Attempt JSON parsing with basic healing
         try:
             extracted_data = json.loads(cleaned_json_string)
