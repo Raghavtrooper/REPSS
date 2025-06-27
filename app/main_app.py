@@ -77,7 +77,7 @@ def get_show_more_detector(_embedding_function: SentenceTransformerEmbeddings): 
 
 # --- Pydantic model for parsed filter conditions ---
 class FilterConditions(BaseModel):
-    skills: list[str] = Field(default_factory=list, description="List of skills mentioned in the query (e.g., Python, AWS).")
+    # Removed 'skills' as they are handled by semantic search only
     experience_years_min: int | None = Field(default=None, description="Minimum years of experience mentioned in the query (inferred from experience_summary).")
     education_level: str | None = Field(default=None, description="Education level (e.g., Bachelor's, Master's, PhD, inferred from qualifications_summary).")
     email_id: str | None = Field(default=None, description="Specific email address mentioned in the query.")
@@ -85,93 +85,170 @@ class FilterConditions(BaseModel):
     location: str | None = Field(default=None, description="Location mentioned in the query.") # New field
     has_photo: bool | None = Field(default=None, description="Boolean indicating if the profile should have a photo (e.g., 'with a photo', 'no photo').") # New field
     objective_keywords: list[str] = Field(default_factory=list, description="Keywords related to career objective.") # New field
+    title: str | None = Field(default=None, description="Job title mentioned in the query.")
+    department: str | None = Field(default=None, description="Department mentioned in the query.")
 
 
 # --- Helper functions for query processing ---
 
-def parse_query_for_filters(query: str, llm: Ollama) -> FilterConditions:
+def parse_query_for_filters(query: str, primary_llm: Ollama) -> FilterConditions:
     """
-    Uses an LLM to extract structured filter conditions from a natural language query.
-    Updated for new fields and to remove 'title'/'department'.
+    Extracts structured filters from the user query.
+    Uses lightweight regex for common fields and falls back to primary LLM if needed.
     """
-    print(f"Parsing query for filters: '{query}')")
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert at extracting structured filter conditions from user queries about employee profiles.
-        Extract relevant keywords for skills, minimum experience in years, education level, email address, phone number, location,
-        whether a photo is required, and keywords for career objective.
-        If a condition is not explicitly mentioned or is ambiguous, leave it as null or an empty list.
-        For phone numbers, extract digits and symbols like '+' only.
-        For 'has_photo', infer true if phrases like 'with a photo', 'has picture', 'image' are used. Infer false if 'no photo', 'without picture' are used. Otherwise, leave null.
-        Provide your response as a JSON object strictly following this schema:
-        {
-          "skills": ["skill1", "skill2"],
-          "experience_years_min": 5,
-          "education_level": "Master's",
-          "email_id": "example@domain.com",
-          "phone_number": "+1234567890",
-          "location": "City, State",
-          "has_photo": true,
-          "objective_keywords": ["leadership", "innovation"]
-        }
-        Do not include any other text or explanation, just the JSON object.
-        Normalize education levels to: Bachelor's, Master's, PhD, Diploma, Certificate, Other.
-        """),
-        ("user", "{query}")
-    ])
+    print(f"Parsing query for filters (hybrid mode): '{query}'")
+    query_lower = query.lower()
+    
+    # --- Basic regex-based extraction ---
+    # Removed skills regex - handled by semantic search
+    # Title: look for common job titles
+    title_match = re.search(r'(engineer|manager|scientist|developer|analyst|lead|hr)', query_lower)
+    # Email: standard email pattern
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+', query)
+    # Phone number: allows for optional '+' and various separators
+    phone_match = re.search(r'(\+?\d[\d\s\-\(\)]{6,})', query)
+    # Experience: captures number before "years"
+    years_match = re.search(r'(\d+)\s*(\+)?\s*years?', query_lower)
+    # Education: captures common education levels
+    edu_match = re.search(r"(bachelor|master|phd|mba|diploma|certificate)", query_lower)
+    # Location: Simple regex for common city/state names, could be expanded
+    location_match = re.search(r'\b(new york|london|paris|tokyo|seattle|san francisco|chicago|bangalore|delhi|mumbai)\b', query_lower)
+    # Has Photo: detect intent for photo
+    has_photo_true_match = re.search(r'\b(with a photo|has picture|image|photo)\b', query_lower)
+    has_photo_false_match = re.search(r'\b(no photo|without picture)\b', query_lower)
 
-    parser_chain = prompt_template | llm 
+    # Initialize filters with regex extracted values
+    filters = FilterConditions(
+        # skills=[] no longer extracted by regex
+        experience_years_min=int(years_match.group(1)) if years_match else None,
+        education_level=edu_match.group(1).title() + "'s" if edu_match else None, # Format as "Master's"
+        title=title_match.group(1).title() if title_match else None,
+        department=None,  # Regex can't reliably infer department, rely on LLM fallback
+        email_id=email_match.group(0) if email_match else None,
+        phone_number=re.sub(r"[^\d+]", "", phone_match.group(1)) if phone_match else None, # Clean phone number
+        location=location_match.group(1).title() if location_match else None,
+        has_photo=True if has_photo_true_match else (False if has_photo_false_match else None),
+        objective_keywords=[] # Regex generally not suited for general keywords
+    )
 
-    try:
-        raw_json_str = parser_chain.invoke({"query": query})
-        raw_json_str = raw_json_str.replace("```json", "").replace("```", "").strip()
-        
-        parsed_data = json.loads(raw_json_str)
-        filters = FilterConditions(**parsed_data)
-        print(f"Extracted filters: {filters.model_dump_json(indent=2)}")
-        return filters
-    except json.JSONDecodeError as e:
-        print(f"Warning: LLM did not return valid JSON for filter extraction: {raw_json_str}. Error: {e}")
-        return FilterConditions()
-    except Exception as e:
-        print(f"Error in parsing query for filters: {e}")
-        return FilterConditions()
+    # Check if any filters were extracted by regex.
+    # We now exclude 'skills' from this check as it's no longer a structured filter.
+    regex_extracted_any = any(
+        (isinstance(v, list) and v) or # Checks for non-empty lists like objective_keywords
+        (isinstance(v, str) and v) or # Checks for non-empty strings
+        (isinstance(v, bool) and v is not None) or # Checks for True/False
+        (isinstance(v, int) and v is not None) # Checks for non-None integers
+        for k, v in filters.model_dump().items()
+    )
+
+    # If regex extraction yielded nothing, fall back to LLM extraction using the primary LLM
+    if not regex_extracted_any:
+        print(f"Regex extraction empty. Falling back to primary LLM ({primary_llm.model})...")
+        try:
+            # System prompt for LLM fallback. Note: It specifically tells LLM *not* to extract skills.
+            system_prompt_llm = """You are an expert at extracting structured filter conditions from user queries about employee profiles.
+            Extract relevant keywords for minimum experience in years, education level, email address, phone number, location,
+            whether a photo is required, keywords for career objective, job title, and department.
+            Do NOT extract skills as a structured filter; they will be handled by other means.
+            If a condition is not explicitly mentioned or is ambiguous, leave it as null or an empty list.
+            For phone numbers, extract digits and symbols like '+' only.
+            For 'has_photo', infer true if phrases like 'with a photo', 'has picture', 'image' are used. Infer false if 'no photo', 'without picture' are used. Otherwise, leave null.
+            Provide your response as a JSON object strictly following this schema:
+            {
+              "experience_years_min": 5,
+              "education_level": "Master's",
+              "email_id": "example@domain.com",
+              "phone_number": "+1234567890",
+              "location": "City, State",
+              "has_photo": true,
+              "objective_keywords": ["leadership", "innovation"],
+              "title": "Software Engineer",
+              "department": "Engineering"
+            }
+            Do not include any other text or explanation, just the JSON object.
+            Normalize education levels to: Bachelor's, Master's, PhD, Diploma, Certificate, Other.
+            """
+            
+            prompt_template = ChatPromptTemplate.from_messages([
+                ("system", system_prompt_llm),
+                ("user", "{query}")
+            ])
+            
+            # Use the primary_llm for fallback
+            parser_chain = prompt_template | primary_llm
+            raw_json_str = parser_chain.invoke({"query": query})
+            raw_json_str = raw_json_str.replace("```json", "").replace("```", "").strip()
+            
+            parsed_data = json.loads(raw_json_str)
+            
+            # Create a new FilterConditions object from LLM output
+            llm_filters = FilterConditions(**parsed_data)
+            
+            # Merge LLM results into 'filters' (which is currently empty from regex)
+            filters.experience_years_min = llm_filters.experience_years_min
+            filters.education_level = llm_filters.education_level
+            filters.email_id = llm_filters.email_id
+            filters.phone_number = llm_filters.phone_number
+            filters.location = llm_filters.location
+            filters.has_photo = llm_filters.has_photo
+            filters.objective_keywords = llm_filters.objective_keywords # LLM will provide these
+            filters.title = llm_filters.title
+            filters.department = llm_filters.department
+
+        except Exception as e:
+            print(f"LLM fallback failed using primary LLM: {e}. Returning empty filters.")
+            # If LLM fallback fails, just return the empty FilterConditions object initialized earlier.
+            return FilterConditions()
+
+    print(f"Extracted filters (hybrid): {filters.model_dump_json(indent=2)}")
+    return filters
 
 def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters: FilterConditions) -> list[Document]:
     """
-    Applies extracted filter conditions to the gold layer DataFrame and converts 
+    Applies structured filters to the gold layer DataFrame and converts 
     matching records into LangChain Document objects.
-    Updated for new fields (location, objective, has_photo) and renamed/removed fields.
     """
     print("Applying structured filters to gold layer data...")
     filtered_df = gold_df.copy()
 
-    if filters.skills:
-        filter_skills_lower = [s.lower() for s in filters.skills]
-        filtered_df = filtered_df[
-            filtered_df['skills'].apply(lambda x: any(skill in x for skill in filter_skills_lower) if isinstance(x, list) else False)
-        ]
-        print(f"  Filtered by skills {filters.skills}: {len(filtered_df)} records remaining.")
-
     if filters.experience_years_min is not None:
-        if 'experience_summary' in filtered_df.columns: # Use new field name
-            filtered_df['experience_str'] = filtered_df['experience_summary'].astype(str)
-            # This regex attempts to find "X year" or "X years"
+        if 'experience' in filtered_df.columns:
+            # Safely convert experience to string before extracting
+            filtered_df['experience_str'] = filtered_df['experience'].astype(str)
+            # Extract numerical part for comparison, assuming format like "X year(s)"
             filtered_df['experience_years_num'] = filtered_df['experience_str'].str.extract(r'(\d+)\s*year').astype(float)
             filtered_df = filtered_df[
                 (filtered_df['experience_years_num'].notna()) & 
                 (filtered_df['experience_years_num'] >= filters.experience_years_min)
             ]
+            # Drop the temporary columns
             filtered_df = filtered_df.drop(columns=['experience_years_num', 'experience_str'])
             print(f"  Filtered by min experience {filters.experience_years_min} years: {len(filtered_df)} records remaining.")
-    
+
     if filters.education_level:
         filter_edu_lower = filters.education_level.lower()
-        if 'qualifications_summary' in filtered_df.columns: # Use new field name
+        if 'education' in filtered_df.columns:
             filtered_df = filtered_df[
-                filtered_df['qualifications_summary'].astype(str).str.lower().str.contains(filter_edu_lower, na=False)
+                filtered_df['education'].astype(str).str.lower().str.contains(filter_edu_lower, na=False)
             ]
         print(f"  Filtered by education level '{filters.education_level}': {len(filtered_df)} records remaining.")
-    
+
+    if filters.title:
+        filter_title_lower = filters.title.lower()
+        if 'title' in filtered_df.columns:
+            filtered_df = filtered_df[
+                filtered_df['title'].astype(str).str.lower().str.contains(filter_title_lower, na=False)
+            ]
+        print(f"  Filtered by title '{filters.title}': {len(filtered_df)} records remaining.")
+
+    if filters.department:
+        filter_dept_lower = filters.department.lower()
+        if 'department' in filtered_df.columns:
+            filtered_df = filtered_df[
+                filtered_df['department'].astype(str).str.lower().str.contains(filter_dept_lower, na=False)
+            ]
+        print(f"  Filtered by department '{filters.department}': {len(filtered_df)} records remaining.")
+
     if filters.email_id:
         filter_email_lower = filters.email_id.lower().strip()
         if 'email_id' in filtered_df.columns:
@@ -181,62 +258,70 @@ def apply_structured_filters_and_convert_to_docs(gold_df: pd.DataFrame, filters:
         print(f"  Filtered by email '{filters.email_id}': {len(filtered_df)} records remaining.")
 
     if filters.phone_number:
+        # Clean phone number for exact match (remove non-digit/non-plus characters)
         cleaned_filter_phone = re.sub(r'[^\d+]', '', filters.phone_number).strip()
         if 'phone_number' in filtered_df.columns:
+            # Ensure the DataFrame column is also cleaned for consistent comparison
             filtered_df = filtered_df[
-                filtered_df['phone_number'].astype(str).str.strip() == cleaned_filter_phone
+                filtered_df['phone_number'].astype(str).apply(lambda x: re.sub(r'[^\d+]', '', x).strip()) == cleaned_filter_phone
             ]
         print(f"  Filtered by phone number '{filters.phone_number}': {len(filtered_df)} records remaining.")
 
-    if filters.location: # New filter for location
+    if filters.location:
         filter_location_lower = filters.location.lower()
         if 'location' in filtered_df.columns:
             filtered_df = filtered_df[
                 filtered_df['location'].astype(str).str.lower().str.contains(filter_location_lower, na=False)
             ]
         print(f"  Filtered by location '{filters.location}': {len(filtered_df)} records remaining.")
-    
-    if filters.has_photo is not None: # New filter for has_photo
+
+    if filters.has_photo is not None:
         if 'has_photo' in filtered_df.columns:
-            # Ensure the column is boolean before direct comparison
-            filtered_df = filtered_df[filtered_df['has_photo'].astype(bool) == filters.has_photo]
+            filtered_df = filtered_df[filtered_df['has_photo'] == filters.has_photo]
         print(f"  Filtered by has_photo '{filters.has_photo}': {len(filtered_df)} records remaining.")
 
-    if filters.objective_keywords: # New filter for objective keywords
-        filter_objective_lower = [kw.lower() for kw in filters.objective_keywords]
+    if filters.objective_keywords:
+        # Assuming 'objective' column exists and contains text for keywords search
         if 'objective' in filtered_df.columns:
+            # Create a regex pattern to match any of the keywords
+            keywords_pattern = '|'.join(re.escape(k.lower()) for k in filters.objective_keywords)
             filtered_df = filtered_df[
-                filtered_df['objective'].astype(str).str.lower().apply(
-                    lambda x: any(kw in x for kw in filter_objective_lower)
-                )
+                filtered_df['objective'].astype(str).str.lower().str.contains(keywords_pattern, na=False)
             ]
-        print(f"  Filtered by objective keywords {filters.objective_keywords}: {len(filtered_df)} records remaining.")
+        print(f"  Filtered by objective keywords '{filters.objective_keywords}': {len(filtered_df)} records remaining.")
 
+    # Removed skills filtering as per user request to handle skills via semantic search only.
+    # if filters.skills: ...
 
     documents = []
     for _, row in filtered_df.iterrows():
+        # Add duplicate status note if applicable
         duplicate_status = ""
         if row.get('_is_master_record') and row.get('_duplicate_count', 1) > 1:
             duplicate_status = f" (NOTE: This person has {row['_duplicate_count']} associated resumes. Group ID: {row['_duplicate_group_id']})"
         elif not row.get('_is_master_record') and row.get('_duplicate_group_id'):
             duplicate_status = f" (NOTE: This is an associated resume for a person with multiple entries. Group ID: {row['_duplicate_group_id']})"
 
-        # Constructing the content string for the document, including new fields
+        # Constructing the content for the Document object
+        # Note: Skills are still included in the content for the LLM to process semantically.
         content = f"Name: {row.get('name', 'Unknown')}{duplicate_status}\n" \
+                  f"Title: {row.get('title', 'Unknown')}\n" \
+                  f"Department: {row.get('department', 'Unknown')}\n" \
+                  f"Experience: {row.get('experience', 'Unknown')}\n" \
+                  f"Skills: {', '.join(row['skills']) if isinstance(row.get('skills'), list) else 'Unknown'}\n" \
+                  f"Education: {row.get('education', 'Unknown')}\n" \
                   f"Email: {row.get('email_id', 'Unknown')}\n" \
                   f"Phone: {row.get('phone_number', 'Unknown')}\n" \
                   f"Location: {row.get('location', 'Unknown')}\n" \
-                  f"Objective: {row.get('objective', 'Unknown')}\n" \
-                  f"Skills: {', '.join(row['skills']) if isinstance(row.get('skills'), list) else 'Unknown'}\n" \
-                  f"Qualifications Summary: {row.get('qualifications_summary', 'Unknown')}\n" \
-                  f"Experience Summary: {row.get('experience_summary', 'Unknown')}\n" \
-                  f"Has Photo: {row.get('has_photo', False)}"
-        
+                  f"Has Photo: {'Yes' if row.get('has_photo') else 'No'}\n" \
+                  f"Objective: {row.get('objective', 'Unknown')}"
+
         metadata = row.to_dict()
-        metadata.pop('skills', None) # Remove skills from metadata to avoid redundancy if already in page_content
+        # Skills are included in content, so optionally remove from metadata to avoid redundancy
+        metadata.pop('skills', None) 
 
         documents.append(Document(page_content=content, metadata=metadata))
-    
+
     print(f"Structured filtering complete. Converted {len(documents)} matching profiles to Documents.")
     return documents
 
@@ -340,24 +425,39 @@ def process_employee_query(
         print(f"Query '{user_query}' detected as 'show me more' intent: {current_query_is_show_more}")
 
         # 2. Parse query for structured filters
+        # Pass the primary LLM configured from shared.config or defaults
         extracted_filters = parse_query_for_filters(user_query, ollama_parser_llm)
-        has_filters = any(
-            getattr(extracted_filters, field) not in (None, [], '')
-            for field in extracted_filters.model_fields.keys()
-        )
+        # Check if any structured filters were actually extracted (excluding default empty list/None values)
+        has_filters = False
+        # Corrected Pydantic model_fields access for newer versions
+        for field_name in FilterConditions.model_fields.keys(): # Access from class, not instance
+            value = getattr(extracted_filters, field_name)
+            # A value is considered a filter if it's not None, not an empty list, and not an empty string.
+            if value is not None and \
+               not (isinstance(value, list) and not value) and \
+               not (isinstance(value, str) and not value):
+                has_filters = True
+                break
+        print(f"Structured filters detected: {has_filters}")
+
 
         final_context_for_llm = []
         newly_shown_doc_ids = set() # To track docs shown in this specific query
 
         # 3. Determine document retrieval strategy
         if has_filters and not gold_df.empty:
+            # Apply structured filters first
             structured_filter_docs = apply_structured_filters_and_convert_to_docs(gold_df, extracted_filters)
             if structured_filter_docs:
                 print(f"Query filters applied: {len(structured_filter_docs)} profiles matched by structured criteria.")
+                
+                # Perform vector similarity search on the original user query for broader context
                 retrieved_docs_from_vectorstore = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
+                
+                # Combine structured filter results with vector store results
                 combined_context_docs = structured_filter_docs + retrieved_docs_from_vectorstore
 
-                # Deduplicate combined documents based on 'id'
+                # Deduplicate combined documents based on 'id' to avoid redundant profiles
                 seen_ids_for_dedupe = set() 
                 deduplicated_context = []
                 for doc in combined_context_docs:
@@ -366,10 +466,11 @@ def process_employee_query(
                         deduplicated_context.append(doc)
                         seen_ids_for_dedupe.add(doc_id)
                     elif not doc_id: 
-                        # If a doc has no ID, assume unique for deduplication for now based on content
+                        # If a doc has no ID (e.g., malformed data), treat it as unique based on content for deduplication in this step
                         if doc.page_content not in [d.page_content for d in deduplicated_context]:
                             deduplicated_context.append(doc)
 
+                # Apply re-ranking or simple top-k based on "show me more" intent
                 if current_query_is_show_more:
                     final_context_for_llm = re_rank_documents(
                         query=user_query,
@@ -379,11 +480,14 @@ def process_employee_query(
                         top_k=FINAL_LLM_CONTEXT_K,
                         penalty_factor=PENALTY_FACTOR
                     )
+                    # Add newly shown documents to the set
                     for doc in final_context_for_llm:
                         doc_id = doc.metadata.get('id')
                         if doc_id:
                             newly_shown_doc_ids.add(doc_id)
                 else:
+                    # For a new query, clear previously shown IDs and populate with current results
+                    # Sort by initial similarity before taking top_k
                     initial_scores = []
                     current_query_embedding_for_sort = embedding_function.embed_query(user_query)
                     current_query_embedding_for_sort = np.array(current_query_embedding_for_sort).reshape(1, -1)
@@ -395,18 +499,17 @@ def process_employee_query(
                     sorted_initial_docs = sorted(initial_scores, key=lambda x: x[0], reverse=True)
                     final_context_for_llm = [doc for score, doc in sorted_initial_docs[:FINAL_LLM_CONTEXT_K]]
                     
-                    # For a new query (not "show more"), clear previous IDs and add current ones
                     previously_shown_doc_ids.clear() 
                     for doc in final_context_for_llm:
                         doc_id = doc.metadata.get('id')
                         if doc_id:
                             newly_shown_doc_ids.add(doc_id)
 
-
                 print(f"Final context for LLM (after structured filter, deduplication, and conditional retrieval): {len(final_context_for_llm)} documents.")
 
-            else: # Structured filters extracted but yielded no results
-                print("Structured filters extracted but yielded no results. Proceeding with vector search.")
+            else: # Structured filters extracted but yielded no results from gold_df
+                print("Structured filters extracted but yielded no results from gold layer. Proceeding with pure vector search.")
+                # Fallback to pure vector search if structured filters yield nothing
                 initial_docs = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
                 if current_query_is_show_more:
                     final_context_for_llm = re_rank_documents(
@@ -429,7 +532,7 @@ def process_employee_query(
                         if doc_id:
                             newly_shown_doc_ids.add(doc_id)
 
-        else: # No filters detected from query, proceed with pure vector search
+        else: # No filters detected from query, or gold layer is empty. Proceed with pure vector search.
             print("No specific filters detected in query or gold layer empty. Performing pure vector search.")
             initial_docs = vectorstore_instance.similarity_search(user_query, k=INITIAL_RETRIEVAL_K)
 
@@ -454,13 +557,17 @@ def process_employee_query(
                     if doc_id:
                         newly_shown_doc_ids.add(doc_id)
 
-        # Update the master previously_shown_doc_ids set
+        # Update the master previously_shown_doc_ids set with all new IDs from this query's results
         previously_shown_doc_ids.update(newly_shown_doc_ids)
         
         # Format chat history for LangChain (ensure it's not empty)
         formatted_history = []
         if chat_history:
-            for msg in chat_history:
+            # The chat_history passed here from Streamlit includes the *current* user query.
+            # LangChain's ChatPromptTemplate expects chat_history to be previous turns.
+            # So, we should exclude the very last message (the current user query)
+            # when constructing the `chat_history` for the prompt.
+            for msg in chat_history[:-1]: # Exclude the current user's message
                 if msg["role"] == "user":
                     formatted_history.append(HumanMessage(content=msg["content"]))
                 elif msg["role"] == "assistant":
@@ -495,7 +602,8 @@ def setup_streamlit_ui():
     """Sets up the basic Streamlit page configuration and title."""
     st.set_page_config(layout="centered", page_title="Employee Profile AI Retriever")
     st.title("Employee Profile AI Retriever")
-    st.markdown("Ask me anything about employee profiles in the organization! Try asking for 'Python developers with 5 years experience', 'someone with a Master\'s degree in Computer Science', 'the person with email jane.doe@example.com', 'employees in New York', 'someone looking for leadership roles', or 'profiles with a photo'.")
+    # Updated example prompt to reflect skill filter and other new capabilities
+    st.markdown("Ask me anything about employee profiles in the organization! Try asking for 'Python developers with 5 years experience', 'someone with a Master\'s degree in Computer Science', 'the person with email jane.doe@example.com', 'employees in New York', 'someone looking for leadership roles', 'profiles with a photo', or 'employees in the Engineering department'.")
 
 def initialize_session_state():
     """Initializes Streamlit session state variables if they don't exist."""
@@ -509,20 +617,6 @@ def display_chat_history():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-def get_formatted_chat_history_streamlit(): # Renamed to avoid clash
-    """Prepares chat history in LangChain message format, limited by MAX_HISTORY_MESSAGES."""
-    formatted_history = []
-    # Exclude the last (current user) message for history context
-    history_to_process = st.session_state.messages[:-1]
-    limited_history = history_to_process[-MAX_HISTORY_MESSAGES:]
-
-    for msg in limited_history:
-        if msg["role"] == "user":
-            formatted_history.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            formatted_history.append(AIMessage(content=msg["content"]))
-    return formatted_history
 
 def handle_query_processing_streamlit(user_query, gold_df, vectorstore_instance, rag_chain_instance,
                             ollama_parser_llm, embedding_function, show_more_detector_data):
@@ -552,11 +646,12 @@ def handle_query_processing_streamlit(user_query, gold_df, vectorstore_instance,
             
             if "error" in response_data:
                 st.error(response_data["error"])
-                st.warning(f"Please ensure Ollama is running and the model '{OLLAMA_MODEL}' is pulled and running.")
+                st.warning(f"Please ensure Ollama is running and the model '{OLLAMA_MODEL}' is pulled and running, and also 'phi2' for fallback.")
                 st.session_state.messages.append({"role": "assistant", "content": response_data["answer"]})
             else:
                 llm_answer = response_data["answer"]
                 retrieved_profiles = response_data["retrieved_profiles"]
+                # Clear and update the session state's previously_shown_doc_ids
                 st.session_state.previously_shown_doc_ids.clear()
                 st.session_state.previously_shown_doc_ids.update(response_data["updated_previously_shown_doc_ids"])
 
