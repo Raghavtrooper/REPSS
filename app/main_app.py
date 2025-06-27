@@ -94,7 +94,7 @@ class FilterConditions(BaseModel):
 def parse_query_for_filters(query: str, primary_llm: Ollama) -> FilterConditions:
     """
     Extracts structured filters from the user query.
-    Uses lightweight regex for common fields and falls back to LLM (phi2) if needed.
+    Uses lightweight regex for common fields and falls back to primary LLM if needed.
     """
     print(f"Parsing query for filters (hybrid mode): '{query}'")
     query_lower = query.lower()
@@ -141,9 +141,9 @@ def parse_query_for_filters(query: str, primary_llm: Ollama) -> FilterConditions
         for k, v in filters.model_dump().items()
     )
 
-    # If regex extraction yielded nothing, fall back to LLM extraction
+    # If regex extraction yielded nothing, fall back to LLM extraction using the primary LLM
     if not regex_extracted_any:
-        print("Regex extraction empty. Falling back to LLM (phi2)...")
+        print(f"Regex extraction empty. Falling back to primary LLM ({primary_llm.model})...")
         try:
             # System prompt for LLM fallback. Note: It specifically tells LLM *not* to extract skills.
             system_prompt_llm = """You are an expert at extracting structured filter conditions from user queries about employee profiles.
@@ -174,9 +174,8 @@ def parse_query_for_filters(query: str, primary_llm: Ollama) -> FilterConditions
                 ("user", "{query}")
             ])
             
-            # Use phi2 as the lightweight fallback LLM
-            phi2_llm = Ollama(model="phi2", temperature=0.0) 
-            parser_chain = prompt_template | phi2_llm
+            # Use the primary_llm for fallback
+            parser_chain = prompt_template | primary_llm
             raw_json_str = parser_chain.invoke({"query": query})
             raw_json_str = raw_json_str.replace("```json", "").replace("```", "").strip()
             
@@ -197,7 +196,7 @@ def parse_query_for_filters(query: str, primary_llm: Ollama) -> FilterConditions
             filters.department = llm_filters.department
 
         except Exception as e:
-            print(f"LLM fallback failed: {e}. Returning empty filters.")
+            print(f"LLM fallback failed using primary LLM: {e}. Returning empty filters.")
             # If LLM fallback fails, just return the empty FilterConditions object initialized earlier.
             return FilterConditions()
 
