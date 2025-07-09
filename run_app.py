@@ -6,12 +6,11 @@ from utility import root_to_sys
 project_root = root_to_sys(__file__)
 
 if __name__ == "__main__":
-    print(f"Launching Streamlit app from: {project_root}")
+    print(f"Launching terminal app from: {project_root}")
     
-    # Define the command to run Streamlit
-    # We use 'sys.executable' to ensure the correct Python interpreter (e.g., from your Anaconda env) is used
-    # And 'streamlit' is usually a script/module within that interpreter's environment
-    command = [sys.executable, "-m", "streamlit", "run", "app/main_app.py"]
+    # Define the command to run the terminal-based main_app.py
+    # We use 'sys.executable' to ensure the correct Python interpreter is used
+    command = [sys.executable, "app/main_app.py"]
     
     try:
         # Use subprocess.run to execute the command
@@ -19,11 +18,10 @@ if __name__ == "__main__":
         # shell=False is generally safer and recommended for commands as a list
         subprocess.run(command, check=True)
     except FileNotFoundError:
-        print("\nError: Streamlit command not found.")
-        print("Please ensure Streamlit is installed in your active Python environment.")
-        print("You can install it using: pip install streamlit")
+        print("\nError: Python interpreter or app/main_app.py not found.")
+        print("Please ensure Python is installed and the path to app/main_app.py is correct.")
     except subprocess.CalledProcessError as e:
-        print(f"\nError launching Streamlit app. Command failed with exit code {e.returncode}")
+        print(f"\nError launching terminal app. Command failed with exit code {e.returncode}")
         print(f"Error output:\n{e.stderr.decode()}")
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}")
