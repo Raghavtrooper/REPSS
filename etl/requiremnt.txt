@@ -1,0 +1,13 @@
+langchain-community
+langchain-core
+numpy
+ollama
+pandas
+pypdf
+python-dotenv
+qdrant-client
+sentence-transformers
+minio
+pyarrow
+fastapi
+uvicorn

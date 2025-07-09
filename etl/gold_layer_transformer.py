@@ -9,9 +9,13 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
     Pandas DataFrame, performing cleaning and normalization, and ANNOTATING duplicates
     rather than dropping or merging them.
     Updated to handle new 'location', 'objective', 'qualifications_summary',
-    'experience_summary', and 'has_photo' fields.
+    'experience_summary', 'has_photo' fields, and the new 'companies_worked_with_duration' field.
+
+    Note: As per the updated ETL pipeline, the output of this function is now primarily
+    for separate storage (e.g., Parquet in MinIO) and analysis, and its output is used
+    as the payload for Qdrant embeddings.
     """
-    print("\nStarting gold layer transformation (annotating duplicates)...")
+    print("\nStarting gold layer transformation (annotating duplicates)..")
     if not structured_profiles:
         print("No structured profiles to transform. Returning empty DataFrame.")
         return pd.DataFrame()
@@ -78,6 +82,15 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
         df['has_photo'] = df['has_photo'].fillna(False).astype(bool)
     else:
         df['has_photo'] = False # Default to False if column is missing
+
+    # Ensure 'companies_worked_with_duration' is a list of strings, default to empty list
+    if 'companies_worked_with_duration' in df.columns:
+        # Convert any non-list values to empty list or ensure it's a list of strings
+        df['companies_worked_with_duration'] = df['companies_worked_with_duration'].apply(
+            lambda x: [str(s).strip() for s in x if str(s).strip()] if isinstance(x, list) else []
+        )
+    else:
+        df['companies_worked_with_duration'] = [[] for _ in range(len(df))] # Add as empty lists if missing
 
 
     # 2. Identify and Annotate Duplicate Profiles

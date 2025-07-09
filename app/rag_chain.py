@@ -2,7 +2,8 @@ from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough # Import RunnablePassthrough
+from operator import itemgetter # Import itemgetter
 
 # Import os for os.getenv
 import os
@@ -11,7 +12,7 @@ import os
 try:
     from shared.config import OLLAMA_MODEL
 except ImportError:
-    print("Warning: shared/config.py not found or incomplete. Using default values.")
+    print("Warning: shared.config.py not found or incomplete. Using default values.")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama2")
 
 
@@ -36,6 +37,7 @@ def get_rag_chain(_vectorstore):
     Example 1:
     Chat History:
     Human: Who is John Doe?
+    AI: John Doe is a Senior Software Engineer.
     AI: John Doe is a Senior Software Engineer.
     Human: What are his skills?
     Standalone Question: What are John Doe's skills?
@@ -94,15 +96,30 @@ def get_rag_chain(_vectorstore):
     # --- Modified Retrieval Logic ---
     def custom_retriever_logic(input_dict):
         if "context" in input_dict and input_dict["context"] is not None:
-            return input_dict["context"]
+            retrieved_docs = input_dict["context"]
+            # DEBUG: Check metadata if context is explicitly provided
+            if retrieved_docs:
+                print(f"DEBUG (custom_retriever_logic): Using explicit context. First doc metadata: {retrieved_docs[0].metadata}")
+            return retrieved_docs
         else:
             print("  No explicit 'context' provided. Using _vectorstore.as_retriever().")
-            return _vectorstore.as_retriever().invoke(input_dict["input"])
+            retrieved_docs = _vectorstore.as_retriever().invoke(input_dict["input"])
+            # ADD THIS DEBUG PRINT: Check metadata after retrieval from vectorstore
+            if retrieved_docs:
+                print(f"DEBUG (custom_retriever_logic): Retrieved docs from vectorstore. First doc metadata: {retrieved_docs[0].metadata}")
+            return retrieved_docs
 
     custom_retriever_runnable = RunnableLambda(custom_retriever_logic)
 
-    # Create the retrieval chain with our custom runnable retriever
-    retrieval_chain = create_retrieval_chain(custom_retriever_runnable, document_chain)
+    # Create the core retrieval chain
+    core_retrieval_chain = create_retrieval_chain(custom_retriever_runnable, document_chain)
+
+    # Now, wrap the core_retrieval_chain to ensure the full metadata is passed through
+    # and available in the final output.
+    # The `main_app.py` expects 'answer' and 'retrieved_profiles' (list of metadata dicts).
+    final_rag_chain = core_retrieval_chain | RunnablePassthrough.assign(
+        retrieved_profiles=lambda x: [doc.metadata for doc in x["context"]]
+    )
 
     print("RAG chain initialized successfully.")
-    return retrieval_chain
+    return final_rag_chain

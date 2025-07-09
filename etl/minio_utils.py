@@ -37,3 +37,17 @@ def upload_to_minio(minio_client, bucket_name, object_name, file_path):
     except Exception as e:
         print(f"An unexpected error occurred during MinIO upload: {e}")
         raise
+
+def download_from_minio(minio_client, bucket_name, object_name, file_path):
+    """
+    Downloads a file from a specified MinIO bucket to a local path.
+    """
+    try:
+        minio_client.fget_object(bucket_name, object_name, file_path)
+        print(f"Successfully downloaded '{object_name}' from '{bucket_name}' to '{file_path}'.")
+    except S3Error as e:
+        print(f"MinIO S3 Error during download: {e}")
+        raise
+    except Exception as e:
+        print(f"An unexpected error occurred during MinIO download: {e}")
+        raise

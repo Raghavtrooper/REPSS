@@ -214,3 +214,6 @@ uvicorn
     Output: The LLM's answer and the source documents (employee profiles) are displayed in the Streamlit UI.
 
 This structured approach ensures efficient data processing, maintainable code, and a robust RAG system for querying employee information.
+
+
+Development note: as of 1/7/2025(dd/mm/yyyy) haystack implemntation in the ETL pipeline could not be done due to version compatability issues.
