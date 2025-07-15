@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-multipart # Recommended for FastAPI to handle form data/file uploads
+langchain-community
+langchain-core
+pypdf
+python-docx # Dependency for Docx2txtLoader
+pandas
+numpy
+minio
+qdrant-client
+sentence-transformers
+tqdm
+requests
+rank_bm25
+nltk

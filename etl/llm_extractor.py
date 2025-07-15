@@ -24,36 +24,56 @@ def get_extraction_prompt():
     Defines and returns the ChatPromptTemplate for structured data extraction.
     Updated to explicitly use 'resume_text' as the input variable and
     escape curly braces in the example JSON.
-    Added 'companies_worked_with_duration' field.
+    Added 'companies_worked_with_duration' field and other new fields as per requirements.
     """
     return ChatPromptTemplate.from_messages([
         ("system",
          "You are an expert at extracting structured information from resume text. "
-         "Extract the following details in JSON format. If a field is not explicitly found or is empty, use 'Not Found' for strings or an empty list [] for skills. "
+         "**Your absolute top priority is to extract all information in a STANDARDIZED, NORMALIZED, and CANONICAL format.** " # Strong overarching mandate
+         "Extract the following details in JSON format. If a field is not explicitly found or is empty, use 'Not Found' for strings or an empty list [] for skills/lists. "
          "The output MUST be a VALID AND COMPLETE JSON object. Pay EXTREME attention to JSON syntax, including commas and closing braces. "
          "The JSON object MUST have the following keys, listed in this order:\n"
          "- 'name': Full name of the candidate (string).\n"
          "- 'email_id': Candidate's primary email address (string). Use 'Not Found' if not explicitly found.\n"
-         "- 'phone_number': Candidate's primary phone number (string). Use 'Not Found' if not explicitly found.\n"
-         "- 'location': Candidate's living address or general location (string). Use 'Not Found' if not explicitly found.\n"
+         "- 'phone_number': Candidate's primary phone number (string). **MUST be exactly a 10-digit numerical string (e.g., '9876543210'). Remove any country codes (like '+91', '0', '+1'), leading zeros, spaces, dashes, parentheses, or other non-digit characters. If the number found is not clearly 10 digits, or if it cannot be normalized to exactly a 10-digit sequence, then you MUST use 'Not Found'. Absolutely NO additional text, explanations, or assumptions like '(assuming Indian number)' or 'xxxxxxxxx'. If multiple numbers, extract only the primary one.**\n"
+         "- 'linkedin_url': Candidate's LinkedIn profile URL (string). Use 'Not Found' if not explicitly found.\n"
+         "- 'github_url': Candidate's GitHub or portfolio URL (string). Use 'Not Found' if not explicitly found.\n"
+         "- 'location': Candidate's living address or general location (string). **Normalize to 'City, State/Province, Country' (e.g., 'Gurugram, Haryana, India' or 'New York, NY, USA'). Use canonical names for cities (e.g., 'Mumbai' NOT 'Bombay', 'Bengaluru' NOT 'Bangalore'). If only a city is found, provide just the city. If state/province or country are not explicitly mentioned but can be confidently inferred (e.g., based on area code in phone number, common city associations), include them. Otherwise, provide 'Not Found'.**\n" # More robust location normalization
+         "- 'current_job_title': Candidate's current or most recent job title (string). Use 'Not Found' if not explicitly found.\n"
          "- 'objective': Candidate's career objective or summary statement (string). Use 'Not Found' if not explicitly found.\n"
-         "- 'skills': A JSON array of key technical or soft skills (list of strings). If no skills, provide an empty array `[]`.\n"
-         "- 'qualifications_summary': **CRITICAL**: Provide a SINGLE, CONCISE TEXT SUMMARY of ALL education history and qualifications, including degree(s) and year(s) of passing. DO NOT provide a list of education objects; flatten all education into ONE descriptive string.\n"
+         "- 'skills': A JSON array of key technical or soft skills (list of strings). **Normalize skill names to their most common, standardized industry term (e.g., 'JavaScript' not 'JS', 'Machine Learning' not 'ML', 'Kubernetes' not 'K8s', 'Python' not 'Py'). Ensure consistent PascalCase or CamelCase capitalization for multi-word skills (e.g., 'Cloud Computing', 'Data Analysis'). All other single words should be Sentence case (e.g., 'Communication'). If no skills, provide an empty array `[]`.**\n" # Detailed skill normalization
+         "- 'qualifications_summary': **CRITICAL**: Provide a SINGLE, CONCISE TEXT SUMMARY of ALL education history and qualifications, including degree(s), institution(s), and year(s) of passing. DO NOT provide a list of education objects; flatten all education into ONE descriptive string.\n"
          "- 'experience_summary': **CRITICAL**: Provide a SINGLE, COMPREHENSIVE TEXT SUMMARY of ALL work experience. This summary MUST include details about each company (e.g., Company A, Company B, Company C), their respective dates (e.g., from 01-10-2007 to 21st-03-2010), project descriptions, and roles and responsibilities. DO NOT provide a list of experience objects or detailed bullet points; flatten all experience into ONE descriptive string.\n"
-         "- 'companies_worked_with_duration': A JSON array of strings, where each string represents a company and the duration worked there, extracted from the experience summary. Format each entry as 'Company Name (Start Date - End Date)' or 'Company Name (Total Duration)'. If no companies found, provide an empty array `[]`.\n\n"
+         "- 'companies_worked_with_duration': A JSON array of strings, where each string represents a company and the duration worked there, extracted from the experience summary. **Strictly normalize all dates to 'DD-MM-YYYY' format (e.g., '01-10-2007' or '15-03-2023'). For ongoing roles, use 'Present'. For total duration, use 'X years Y months' (e.g., '3 years 6 months'). Format each entry strictly as 'Company Name (Start Date - End Date/Present)' or 'Company Name (Total Duration)'. If no companies found, provide an empty array `[]`.**\n" # Stricter date/duration normalization
+         "- 'certifications': A JSON array of professional certifications or licenses (list of strings). If none, provide an empty array `[]`.\n"
+         "- 'awards_achievements': A JSON array of awards, honors, or significant achievements (list of strings). If none, provide an empty array `[]`.\n"
+         "- 'projects': A JSON array of concise project summaries. Each entry should describe a project, your role, and key technologies used (list of strings). If none, provide an empty array `[]`.**\n"
+         "- 'languages': A JSON array of languages spoken, including proficiency if available (e.g., 'English (Native)', 'Spanish (Fluent)') (list of strings). **Normalize proficiency levels to a standard set: 'Native', 'Fluent', 'Advanced', 'Intermediate', 'Basic'. If no proficiency, just list the language name (e.g., 'English'). If none, provide an empty array `[]`.**\n" # Standardized proficiency
+         "- 'availability_status': Candidate's availability status (e.g., 'Immediately available', '2 weeks notice', 'Actively looking') (string). **Normalize to one of these specific terms if applicable: 'Immediately available', '2 weeks notice', 'Actively looking', 'Open to opportunities', 'Not Found'.**\n" # Standardized availability status
+         "- 'work_authorization_status': Candidate's work authorization or visa status (e.g., 'US Citizen', 'H1B Visa', 'Requires Sponsorship') (string). **Normalize to standard, concise terms such as: 'US Citizen', 'Green Card Holder', 'H1B Visa', 'Requires Sponsorship', 'EAD', 'Not Found'.**\n\n" # Standardized work auth status
+         "**CRITICAL ADHERENCE: You MUST strictly follow ALL normalization rules for each field. Any deviation from the specified formats, canonical names, or standardized terms is UNACCEPTABLE. YOUR SOLE FOCUS IS NORMALIZED OUTPUT.**\n" # Final, strong enforcement
          "Your response MUST start with the opening curly brace `{{` and end with the closing curly brace `}}`. "
          "Example JSON structure (observe the single string for experience/qualifications, and separate contact fields):\n"
          "```json\n"
          "{{\n" # Escaped
          "  \"name\": \"John Doe\",\n"
          "  \"email_id\": \"john.doe@example.com\",\n"
-         "  \"phone_number\": \"+1-555-123-4567\",\n"
-         "  \"location\": \"New York, NY\",\n"
+         "  \"phone_number\": \"+15551234567\",\n" # Updated example phone
+         "  \"linkedin_url\": \"[https://linkedin.com/in/johndoe](https://linkedin.com/in/johndoe)\",\n"
+         "  \"github_url\": \"[https://github.com/johndoe-dev](https://github.com/johndoe-dev)\",\n"
+         "  \"location\": \"New York, NY, USA\",\n" # Updated example location
+         "  \"current_job_title\": \"Senior Software Engineer\",\n"
          "  \"objective\": \"Highly motivated software engineer seeking challenging opportunities in cloud development.\",\n"
-         "  \"skills\": [\"Python\", \"AWS\", \"Docker\"],\n"
+         "  \"skills\": [\"Python\", \"AWS\", \"Docker\", \"Kubernetes\", \"Cloud Computing\"],\n" # Updated example skills
          "  \"qualifications_summary\": \"B.Sc. in Computer Science from University X (2018-2022) and an online certificate in Data Science from XYZ Academy.\",\n"
-         "  \"experience_summary\": \"5 years in software development. At Company A (01-10-2007 to 21-03-2010), developed backend services for e-commerce. At Company B (01-04-2010 to 21-03-2017), led a team for cloud deployments. At Company C (01-04-2017 to till date), responsible for AI integration projects.\",\n"
-         "  \"companies_worked_with_duration\": [\"Company A (01-10-2007 - 21-03-2010)\", \"Company B (01-04-2010 - 21-03-2017)\", \"Company C (01-04-2017 - till date)\"]\n"
+         "  \"experience_summary\": \"5 years in software development. At Company A (01-10-2007 to 21-03-2010), developed backend services for e-commerce. At Company B (01-04-2010 to 21-03-2017), led a team for cloud deployments. At Company C (01-04-2017 to Present), responsible for AI integration projects.\",\n" # Updated experience summary
+         "  \"companies_worked_with_duration\": [\"Company A (01-10-2007 - 21-03-2010)\", \"Company B (01-04-2010 - 21-03-2017)\", \"Company C (01-04-2017 - Present)\"],\n" # Updated example duration
+         "  \"certifications\": [\"AWS Certified Solutions Architect\", \"PMP\"],\n"
+         "  \"awards_achievements\": [\"Employee of the Year 2023\", \"Patent for Cloud Optimization Algorithm\"],\n"
+         "  \"projects\": [\"E-commerce Backend Service: Developed REST APIs using Python/Django, integrated with Stripe.\", \"AI Chatbot: Built conversational AI using Rasa and TensorFlow for customer support.\"],\n"
+         "  \"languages\": [\"English (Native)\", \"Spanish (Fluent)\"],\n" # Example language
+         "  \"availability_status\": \"Immediately available\",\n"
+         "  \"work_authorization_status\": \"US Citizen\"\n"
          "}}\n" # Escaped
          "```\n"
          "Ensure ALL string values within the JSON are correctly escaped if they contain double quotes or backslashes. DO NOT include any other text, preambles, or explanations outside the JSON object. Just the JSON."
@@ -64,9 +84,9 @@ def get_extraction_prompt():
 def process_resume_file(llm, extraction_prompt, document_content, original_filename, doc_metadata=None):
     """
     Reads a raw resume file, extracts structured data using LLM, and returns it.
-    Updated to handle new 'location', 'objective', 'qualifications_summary', and
-    'experience_summary' fields, 'has_photo' metadata, and the new
-    'companies_worked_with_duration' field.
+    Updated to handle new 'location', 'objective', 'qualifications_summary',
+    'experience_summary', 'has_photo' metadata, 'companies_worked_with_duration',
+    and all the newly requested fields.
     """
     if document_content is None or not document_content.strip():
         print(f"  Skipping {os.path.basename(original_filename)}: Could not load content or content is empty.")
@@ -117,8 +137,11 @@ def process_resume_file(llm, extraction_prompt, document_content, original_filen
                 return None
 
         # Clean up "Not Found" or empty values for better handling
-        fields_to_check = ['name', 'email_id', 'phone_number', 'location', 'objective', 
-                           'experience_summary', 'qualifications_summary'] # Updated fields
+        fields_to_check = [
+            'name', 'email_id', 'phone_number', 'linkedin_url', 'github_url', 
+            'location', 'current_job_title', 'objective', 'experience_summary', 
+            'qualifications_summary', 'availability_status', 'work_authorization_status'
+        ] # Updated fields to check
         for key in fields_to_check:
             if key in extracted_data and (extracted_data[key] == "Not Found" or extracted_data[key] is None or (isinstance(extracted_data[key], str) and extracted_data[key].strip() == '')):
                 extracted_data[key] = None
@@ -129,24 +152,17 @@ def process_resume_file(llm, extraction_prompt, document_content, original_filen
             if key in extracted_data and isinstance(extracted_data[key], list):
                 extracted_data[key] = " ".join(map(str, extracted_data[key])) if extracted_data[key] else None
         
-        # Ensure skills is a list of strings
-        if 'skills' in extracted_data:
-            value = extracted_data['skills']
-            if isinstance(value, str):
-                extracted_data['skills'] = [s.strip() for s in value.split(',') if s.strip()] if value != "Not Found" else []
-            elif not isinstance(value, list):
-                extracted_data['skills'] = []
-
-        # Ensure 'companies_worked_with_duration' is a list of strings
-        if 'companies_worked_with_duration' in extracted_data:
-            value = extracted_data['companies_worked_with_duration']
-            if isinstance(value, str):
-                # If LLM returns a string (e.g., "Company A (2020-2022), Company B (2018-2020)"), split it
-                extracted_data['companies_worked_with_duration'] = [s.strip() for s in value.split(',') if s.strip()] if value != "Not Found" else []
-            elif not isinstance(value, list):
-                extracted_data['companies_worked_with_duration'] = []
-        else:
-            extracted_data['companies_worked_with_duration'] = [] # Ensure it always exists as a list
+        # Ensure skills, companies_worked_with_duration, certifications, awards_achievements, projects, languages are lists of strings
+        list_fields = ['skills', 'companies_worked_with_duration', 'certifications', 'awards_achievements', 'projects', 'languages']
+        for field in list_fields:
+            if field in extracted_data:
+                value = extracted_data[field]
+                if isinstance(value, str):
+                    extracted_data[field] = [s.strip() for s in value.split(',') if s.strip()] if value != "Not Found" else []
+                elif not isinstance(value, list):
+                    extracted_data[field] = []
+            else:
+                extracted_data[field] = [] # Ensure it always exists as an empty list if not found
 
         # Merge document-level metadata (like has_photo) into the structured data
         if doc_metadata:
