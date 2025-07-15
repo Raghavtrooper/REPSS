@@ -57,3 +57,5 @@ async def trigger_etl():
             status_code=500,
             detail=f"Failed to trigger ETL process: {str(e)}"
         )
+
+#uvicorn api_main:app --reload

@@ -22,6 +22,15 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
 
     df = pd.DataFrame(structured_profiles)
 
+    # Ensure all expected top-level columns are present, adding them with a default if missing
+    expected_string_cols = ['name', 'location', 'objective', 'email_id', 'phone_number',
+                            'experience_summary', 'qualifications_summary',
+                            'current_job_title', 'linkedin_url', 'github_url'
+                           ]
+    for col in expected_string_cols:
+        if col not in df.columns:
+            df[col] = "Unknown" # Default to "Unknown" if the column is entirely missing from input
+
     # 1. Initial Cleaning & Normalization (applies to individual records)
     # No 'title' or 'department' cleaning needed as they are no longer extracted
 
@@ -69,7 +78,8 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
 
     # Fill remaining string columns with "Unknown" for consistency
     string_cols_to_fill = ['name', 'location', 'objective', 'email_id', 'phone_number',
-                           'experience_summary', 'qualifications_summary'] # Updated list of string columns
+                           'experience_summary', 'qualifications_summary', 'current_job_title',
+                           'linkedin_url', 'github_url'] # Updated list of string columns
     for col in string_cols_to_fill:
         if col in df.columns:
             if df[col].isnull().any() or (df[col].astype(str).str.lower() == 'not found').any() or (df[col].astype(str).str.strip() == '').any():
@@ -91,6 +101,24 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
         )
     else:
         df['companies_worked_with_duration'] = [[] for _ in range(len(df))] # Add as empty lists if missing
+
+    # Handle 'certifications' column
+    print("  Ensuring 'certifications' column is a list of strings...")
+    if 'certifications' in df.columns:
+        df['certifications'] = df['certifications'].apply(
+            lambda x: [str(s).strip() for s in x if str(s).strip()] if isinstance(x, list) else []
+        )
+    else:
+        df['certifications'] = [[] for _ in range(len(df))] # Add as empty lists if missing
+
+    # Handle 'projects' column
+    print("  Ensuring 'projects' column is a list of strings...")
+    if 'projects' in df.columns:
+        df['projects'] = df['projects'].apply(
+            lambda x: [str(s).strip() for s in x if str(s).strip()] if isinstance(x, list) else []
+        )
+    else:
+        df['projects'] = [[] for _ in range(len(df))] # Add as empty lists if missing
 
 
     # 2. Identify and Annotate Duplicate Profiles
@@ -132,8 +160,8 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
                     df.loc[master_idx, '_is_master_record'] = True
                     df.loc[group_by_sec_key.index, '_duplicate_group_id'] = group_id
                     df.loc[master_idx, '_duplicate_count'] = len(group_by_sec_key)
-                    df.loc[master_idx, '_associated_original_filenames'] = group_by_sec_key['_original_filename'].tolist()
-                    df.loc[master_idx, '_associated_ids'] = group_by_sec_key['id'].tolist()
+                    df.at[master_idx, '_associated_original_filenames'] = group_by_sec_key['_original_filename'].tolist() # Fix: Use .at for single cell assignment
+                    df.at[master_idx, '_associated_ids'] = group_by_sec_key['id'].tolist() # Fix: Use .at for single cell assignment
                     processed_indices.update(group_by_sec_key.index)
         else: # This group contains profiles with a known email_id
             # Only process if this group hasn't been processed via a different path already
@@ -144,8 +172,8 @@ def transform_to_gold_layer(structured_profiles: list) -> pd.DataFrame:
                 df.loc[master_idx, '_is_master_record'] = True
                 df.loc[group_by_email.index, '_duplicate_group_id'] = group_id
                 df.loc[master_idx, '_duplicate_count'] = len(group_by_email)
-                df.loc[master_idx, '_associated_original_filenames'] = group_by_email['_original_filename'].tolist()
-                df.loc[master_idx, '_associated_ids'] = group_by_email['id'].tolist()
+                df.at[master_idx, '_associated_original_filenames'] = group_by_email['_original_filename'].tolist() # Fix: Use .at for single cell assignment
+                df.at[master_idx, '_associated_ids'] = group_by_email['id'].tolist() # Fix: Use .at for single cell assignment
                 processed_indices.update(group_by_email.index)
     
     # Final pass to ensure any remaining un-grouped records get a unique group ID and are marked as master

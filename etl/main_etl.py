@@ -77,8 +77,14 @@ def main():
 
     # Step 3: Load existing structured profiles (Silver Layer) from MinIO and identify those to keep
     existing_profiles_from_json = []
-    silver_layer_object_name = os.path.basename(OUTPUT_JSON_FILE) # e.g., "structured_profiles.json"
+    silver_layer_object_name = os.path.basename(OUTPUT_JSON_FILE) # e.g., "employee_profiles.json"
     temp_silver_layer_local_path = OUTPUT_JSON_FILE # Use the same path for local temp file
+
+    # Ensure the local directory for silver layer JSON exists before attempting to download
+    local_silver_dir = os.path.dirname(temp_silver_layer_local_path)
+    if local_silver_dir: # Only create if local_silver_dir is not empty (i.e., not just a filename in CWD)
+        os.makedirs(local_silver_dir, exist_ok=True)
+        print(f"Ensured local directory '{local_silver_dir}' exists for silver layer JSON.")
 
     print(f"Attempting to download existing silver layer JSON from '{SILVER_LAYER_BUCKET_NAME}/{silver_layer_object_name}'...")
     try:
