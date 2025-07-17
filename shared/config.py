@@ -39,6 +39,11 @@ MINIO_OBJECT_NAME = os.getenv("MINIO_OBJECT_NAME", "gold_employee_profiles.parqu
 
 # New MinIO bucket for rejected profiles
 REJECTED_PROFILES_BUCKET_NAME = os.getenv("REJECTED_PROFILES_BUCKET_NAME", "rejected-resumes")
+# New MinIO bucket for rejected profiles
+REJECTED_PROFILES_BUCKET_NAME = os.getenv("REJECTED_PROFILES_BUCKET_NAME", "rejected-resumes")
+
+# New MinIO bucket for stale profiles (exist in JSON but missing in raw-resumes bucket)
+STALE_PROFILES_BUCKET_NAME = os.getenv("STALE_PROFILES_BUCKET_NAME", "stale-profiles")
 
 
 # Qdrant Configuration (New)
@@ -46,7 +51,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "157.180.44.51") # Hostname/IP of Qdrant 
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333)) # Port of Qdrant service (HTTP)
 QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", 6334)) # gRPC port (optional, but good to define)
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") # API key if Qdrant requires authentication
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "employee_profiles1") # Default collection name
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "employee_profiles") # Default collection name
 
 # RAG Chain Configuration
 MAX_HISTORY_MESSAGES = 6 # Maximum number of chat history messages to send to the LLM

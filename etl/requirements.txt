@@ -14,3 +14,4 @@ tqdm
 requests
 rank_bm25
 nltk
+docx2txt
