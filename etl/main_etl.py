@@ -176,6 +176,11 @@ def main():
                 try:
                     upload_to_minio(minio_client, REJECTED_PROFILES_BUCKET_NAME, original_filename, local_raw_resume_path)
                     print(f"  Uploaded rejected raw resume '{original_filename}' to '{REJECTED_PROFILES_BUCKET_NAME}'.")
+                    try:
+                        minio_client.remove_object(RAW_RESUMES_BUCKET_NAME, original_filename)
+                        print(f"  Removed original resume '{original_filename}' from '{RAW_RESUMES_BUCKET_NAME}'.")
+                    except Exception as e:
+                        print(f"  Warning: Failed to remove '{original_filename}' from '{RAW_RESUMES_BUCKET_NAME}': {e}")    
                 except Exception as e:
                     print(f"  Error uploading rejected resume '{original_filename}' to MinIO: {e}")
             else:

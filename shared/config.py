@@ -10,7 +10,8 @@ load_dotenv()
 RAW_RESUMES_DIR = "./raw_resumes"
 
 # Path for the structured JSON output file (Silver Layer) - local temporary storage
-OUTPUT_JSON_FILE = "./employee_profiles.json"
+# UPDATED: Now includes 'outputjson' directory for local storage
+OUTPUT_JSON_FILE = "./outputjson/employee_profiles.json"
 
 # Path for the cleaned & enriched Parquet output file (Gold Layer)
 GOLD_LAYER_PARQUET_FILE = "./gold_employee_profiles.parquet"
@@ -45,7 +46,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "157.180.44.51") # Hostname/IP of Qdrant 
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333)) # Port of Qdrant service (HTTP)
 QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", 6334)) # gRPC port (optional, but good to define)
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") # API key if Qdrant requires authentication
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "employee_profiles") # Default collection name
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "employee_profiles1") # Default collection name
 
 # RAG Chain Configuration
 MAX_HISTORY_MESSAGES = 6 # Maximum number of chat history messages to send to the LLM

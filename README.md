@@ -1,219 +1,236 @@
-# Resume RAG System
++---------------------------------------------------+
+|          ETL Pipeline for Resume Data Processing          |
++---------------------------------------------------+
 
-This project implements a Retrieval Augmented Generation (RAG) system for querying employee profiles (resumes). It consists of an ETL (Extract, Transform, Load) pipeline to process raw resume documents into a structured format, enrich them, and store them in a vector database (ChromaDB) and a gold layer (Parquet file). A Streamlit application then uses this data to answer questions about employee skills and profiles using an LLM.
-Project Structure
+This project implements an ETL (Extract, Transform, Load) pipeline for processing resume data, extracting structured information using Large Language Models (LLMs), and storing it in a vector database (Qdrant) for efficient search and retrieval. It also includes a FastAPI application to trigger the ETL process via an API endpoint.
 
-### The project is organized into logical directories to separate concerns:
++---------------------------------------------------+
+|                Detailed Explanation               |
++---------------------------------------------------+
 
-```text
-.
-|──  api/
-|   |── api_helper.py        # Functions provided for the rest_controller
-|   └── rest_controller.py   # Server module
-├── app/
-│   ├── main_app.py           # Main Streamlit application
-│   ├── rag_chain.py          # Defines the RAG chain using LangChain
-│   ├── ui_components.py      # Contains reusable UI components for Streamlit
-│   └── vector_utils.py       # Initializes and loads the ChromaDB vector store
-├── etl/
-│   ├── chroma_builder.py     # Handles ChromaDB creation and persistence
-│   ├── data_loader.py        # Utility for loading content from various document types (PDF, DOCX, TXT)
-│   ├── gold_layer_transformer.py # Transforms silver layer data to gold layer, including duplicate annotation
-│   ├── llm_extractor.py      # Uses LLM to extract structured data from raw resumes
-│   ├── main_etl.py           # Orchestrates the entire ETL pipeline
-│   └── minio_utils.py        # Utilities for interacting with MinIO storage
-├── raw_resumes/              # Directory to store raw resume files (PDF, DOCX, TXT)
-│   └── example_resume.txt    # (Example placeholder)
-├── shared/
-│   └── config.py             # Centralized configuration file for environment variables and paths
-├── .env                      # Environment variables for configuration (e.g., MinIO credentials, Ollama model)
-├── employee_profiles.json    # (Generated) Silver layer: structured data after LLM extraction
-├── gold_employee_profiles.parquet # (Generated) Gold layer: cleaned, enriched, and annotated data
-├── chroma_db/                # (Generated) Persistent directory for ChromaDB vector store
-|── run_api.py                # Server launcher
-├── run_app.py                # Script to launch the Streamlit application
-└── run_etl.py                # Script to execute the ETL pipeline
-```
+The ETL pipeline is designed to ingest raw resume files (PDF, DOCX, TXT), extract key information, normalize and deduplicate the data, and then store it in both a structured format (Parquet) and an indexed vector database (Qdrant) for semantic search capabilities.
 
-## Functionality
-### ETL Pipeline (etl/)
++---------------------------------------------------+
+|               ETL Process Overview                |
++---------------------------------------------------+
 
-The ETL pipeline is responsible for preparing the data for the RAG system:
+The main_etl.py script orchestrates the entire ETL process, which includes the following steps:
 
-    Data Loading (data_loader.py): Reads raw resume files (PDF, DOCX, TXT) from the raw_resumes/ directory and extracts their text content.
+    MinIO Connection: Initializes a connection to MinIO for data storage and retrieval.
 
-    LLM Extraction (llm_extractor.py): Uses an Ollama-based LLM to parse the raw text content of resumes and extract structured information (e.g., name, title, skills, experience, education, contact info) into a JSON format (Silver Layer).
+    Raw Resume Download: Downloads raw resume files (PDF, DOCX, TXT) from a specified MinIO bucket to a local directory.
 
-    Gold Layer Transformation (gold_layer_transformer.py): Takes the extracted structured data, performs cleaning, normalization, and importantly, annotates duplicate records instead of merging or dropping them. This creates the "Gold Layer" data.
+    LLM and Prompt Initialization: Sets up the Ollama LLM and defines the prompt for structured data extraction.
 
-    MinIO Upload (minio_utils.py): Uploads the generated Gold Layer Parquet file to a MinIO object storage bucket for persistence and accessibility.
+    Silver Layer Processing:
 
-    ChromaDB Building (chroma_builder.py): Creates a vector database (ChromaDB) from the Gold Layer profiles using SentenceTransformerEmbeddings. The textual content and metadata from the profiles are embedded and stored, enabling semantic search.
+        Loads existing "silver layer" (semi-structured) profiles from MinIO to avoid re-processing unchanged files.
 
-    Orchestration (main_etl.py): This script ties together all the ETL steps, managing the flow from raw documents to the persistent ChromaDB and Gold Layer Parquet file.
+        Compares downloaded raw resumes with existing silver layer data to identify new, modified, or deleted files.
 
-### RAG Application (app/)
+        Processes new/modified resumes:
 
-The Streamlit application provides a user interface for interacting with the processed data:
+            Loads document content using data_loader.py, which supports PDF, DOCX, and TXT, and detects if a PDF contains images.
 
-    Main Application (main_app.py): The core Streamlit application. It loads the pre-built ChromaDB, initializes the RAG chain, manages chat history, and displays responses and retrieved documents.
+            Extracts structured data using the LLM (Ollama) and a predefined prompt (llm_extractor.py). This includes fields like name, email, phone, skills, experience summary, and more, with strict normalization rules.
 
-    RAG Chain (rag_chain.py): Defines the LangChain-based RAG chain. This chain takes a user's query and chat history, retrieves relevant documents from ChromaDB, and then feeds them to an Ollama LLM to generate a coherent and informative response. It includes a custom retriever logic to handle explicit context or use the vector store as needed.
+            Handles rejected profiles by uploading them to a dedicated MinIO bucket.
 
-    UI Components (ui_components.py): Contains helper functions for common Streamlit UI elements, such as clearing chat history.
+        Consolidates newly extracted and retained existing profiles into a final "silver layer" dataset.
 
-    Vector Utilities (vector_utils.py): Initializes or loads the ChromaDB vector store for the Streamlit application.
+        Uploads the updated "silver layer" JSON to MinIO.
 
-### Tech Stack
+    Gold Layer Transformation:
 
-    Python 3.x: The primary programming language.
+        Transforms the "silver layer" data into a "gold layer" Pandas DataFrame using gold_layer_transformer.py.
 
-    Streamlit: For building the interactive web application.
+        Performs data cleaning, normalization (e.g., skills, email, phone numbers), and annotations for duplicate records rather than merging or dropping them.
 
-    LangChain: Framework for developing applications powered by language models, used for the RAG pipeline.
+        Uploads the gold layer data as a Parquet file to MinIO.
 
-    Ollama: For running open-source large language models locally (e.g., Llama3).
+    Qdrant DB Generation:
 
-    ChromaDB: A lightweight, open-source vector database used for storing and querying document embeddings.
+        Generates and persists the Qdrant vector database using qdrant_builder.py.
 
-    Sentence Transformers: For generating embeddings (specifically all-MiniLM-L6-v2).
+        Embeddings are generated from the "silver layer" data, while the "gold layer" data serves as the payload for each Qdrant point, enabling both semantic and keyword search.
 
-    Pandas: For data manipulation and creating the Gold Layer DataFrame.
+        Uploads the BM25 model and token-to-index mapping to MinIO for keyword search functionality.
 
-    MinIO: Open-source object storage suite compatible with Amazon S3 APIs, used for persisting the Gold Layer Parquet file.
+    Cleanup: Removes temporary local files and directories created during the ETL process.
 
-    python-dotenv: For managing environment variables.
++---------------------------------------------------+
+|                 Module Breakdown                  |
++---------------------------------------------------+
 
-    PyPDFLoader, Docx2txtLoader, TextLoader (from langchain_community): For loading content from various document formats.
+    api_main.py:
 
-### Dependencies
+        Implements a FastAPI application to expose an API endpoint (/trigger-etl) that initiates the ETL process.
 
-You can install the Python dependencies using pip and the requirements.txt file (which you would typically generate or create based on the above tech stack).
+        Provides a root endpoint (/) for a welcome message.
 
-Example requirements.txt:
+        Handles asynchronous execution of the ETL process to prevent blocking the API.
 
-streamlit
-langchain
-langchain-community
-ollama
-chromadb
-sentence-transformers
-pandas
-python-dotenv
-minio
-pydantic
-fastapi
-uvicorn
+    data_loader.py:
 
-### Setup and Running the Project
-### Prerequisites
+        Responsible for loading text content from various document types, including PDF, DOCX, and TXT files.
 
-    Python 3.x: Ensure Python is installed.
+        Utilizes langchain_community loaders and pypdf for content extraction and image detection in PDFs.
 
-    Ollama: Download and install Ollama from https://ollama.com/.
+        Returns document content as a string along with metadata, including a has_photo flag for PDFs.
 
-        Pull the required LLM model (e.g., llama3): ollama pull llama3
+    gold_layer_transformer.py:
 
-    MinIO (Optional but Recommended): Set up a MinIO server. You can run it locally via Docker:
+        Takes structured "silver layer" profiles and transforms them into a "gold layer" Pandas DataFrame.
 
-    docker run -p 9000:9000 -p 9001:9001 --name minio1 \
-      -e "MINIO_ROOT_USER=admin" \
-      -e "MINIO_ROOT_PASSWORD=password123" \
-      quay.io/minio/minio server /data --console-address ":9001"
+        Performs data cleaning, normalization (e.g., standardizing skill names, cleaning email IDs and phone numbers), and deduplication annotation.
 
-### Configuration
+        Enriches profiles with metadata like duplicate group IDs and associated filenames.
 
-    Create a .env file in the project root with your configuration:
+    llm_extractor.py:
 
-    OLLAMA_MODEL=llama3
-    MINIO_ENDPOINT=localhost:9000
-    MINIO_ACCESS_KEY=admin
-    MINIO_SECRET_KEY=password123
-    MINIO_SECURE=False
-    MINIO_BUCKET_NAME=extracted
-    MINIO_OBJECT_NAME=gold_employee_profiles.parquet
+        Initializes the Ollama LLM for structured data extraction.
 
-    Adjust values as per your setup. MINIO_SECURE should be True if using HTTPS.
+        Defines a comprehensive ChatPromptTemplate for extracting specific fields from resume text (e.g., name, contact info, skills, experience, education) in a standardized JSON format.
 
-### Steps to Run
+        Includes logic for strict normalization of extracted data (e.g., 10-digit phone numbers, standardized locations, normalized skills).
 
-    1. Install Dependencies:
+        Processes resume files, sends their content to the LLM for extraction, and merges document-level metadata.
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+    main_etl.py:
 
-    (Assuming you create a requirements.txt from the listed dependencies)
+        The main script that orchestrates the entire ETL pipeline.
 
-    2. Place Raw Resumes:
-    Put your PDF, DOCX, or TXT resume files into the raw_resumes/ directory.
+        Manages the flow of data through different stages: downloading raw resumes, extracting data, transforming to gold layer, and generating the Qdrant DB.
 
-    3. Run the ETL Pipeline:
-    This step processes the raw resumes, extracts data, transforms it, and builds the ChromaDB and Gold Layer Parquet file.
+        Handles MinIO interactions for data persistence.
 
-    ```bash
+    minio_utils.py:
+
+        Provides utility functions for interacting with MinIO.
+
+        Includes functions to initialize the MinIO client, upload files to a specified bucket (creating the bucket if it doesn't exist), and download files from a bucket.
+
+    qdrant_builder.py:
+
+        Connects to a Qdrant service and generates the Qdrant database.
+
+        Uses SentenceTransformerEmbeddings for dense vector embeddings and BM25Okapi for sparse vector (keyword) embeddings, combining them for hybrid search.
+
+        Constructs a comprehensive text corpus from silver profiles for embedding generation and uses gold profiles as payload for Qdrant points.
+
+        Uploads the trained BM25 model and token-to-index mapping to MinIO for later use in search.
+
+    qdrant_builder(for_embeddings_only).py:
+
+        A simplified version of the Qdrant builder focused solely on dense embeddings, without the hybrid search (BM25) components.
+
+        Generates embeddings from silver_profiles and uses gold_profiles as the payload for Qdrant points.
+
+    run_etl.py:
+
+        A wrapper script to execute the main function from main_etl.py, providing a straightforward way to run the ETL process.
+
+        Adds the project root to sys.path to ensure correct module imports.
+
+    requirements.txt:
+
+        Lists all the Python dependencies required for the project.
+
+Data Flow
+
+Raw resume files (PDF, DOCX, TXT) are downloaded from MinIO. These are then processed by data_loader.py to extract raw text content. llm_extractor.py uses an LLM to extract structured data (the "silver layer"). This silver layer data is then fed into gold_layer_transformer.py for cleaning, normalization, and deduplication annotation, creating the "gold layer." Both silver and gold layer data are used by qdrant_builder.py to generate embeddings and payloads for the Qdrant vector database, enabling advanced search functionalities. The gold layer data is also stored as a Parquet file in MinIO.
+
++---------------------------------------------------+
+|                   Installation                    |
++---------------------------------------------------+
+
+    Clone the Repository:
+        git clone <repository_url>
+        cd <repository_name>
+
+    Create a Virtual Environment (recommended):
+        python -m venv venv
+        source venv/bin/activate # On Windows: venv\Scripts\activate
+
+    Install Dependencies:
+        pip install -r requirements.txt
+
+    The requirements.txt includes:
+    fastapi
+    uvicorn
+    python-multipart
+    langchain-community
+    langchain-core
+    pypdf
+    python-docx
+    pandas
+    numpy
+    minio
+    qdrant-client
+    sentence-transformers
+    tqdm
+    requests
+    rank_bm25
+    nltk
+
+    Set up Environment Variables:
+    Configuration for the ETL pipeline is managed via environment variables, which are loaded by config.py. You should create a .env file in the project root to define these variables.
+
+    Example .env file:
+    MinIO Configuration
+
+    MINIO_ENDPOINT="157.180.44.51:9000"
+    MINIO_ACCESS_KEY="minioadmin"
+    MINIO_SECRET_KEY="minioadmin"
+    MINIO_SECURE="False" # Set to "True" for HTTPS
+    MinIO Bucket Names
+
+    RAW_RESUMES_BUCKET_NAME="rawresumes"
+    SILVER_LAYER_BUCKET_NAME="outputjson" # Matches OUTPUT_JSON_FILE path
+    REJECTED_PROFILES_BUCKET_NAME="rejected-resumes"
+    MINIO_BUCKET_NAME="extracted" # For Gold Layer Parquet and Qdrant/BM25 models
+    MinIO Object Names
+
+    MINIO_OBJECT_NAME="gold_employee_profiles.parquet" # Gold Layer Parquet file name
+    Local Directories and Files (defaults are set in config.py)
+    RAW_RESUMES_DIR="./raw_resumes"
+    OUTPUT_JSON_FILE="./outputjson/employee_profiles.json"
+    GOLD_LAYER_PARQUET_FILE="./gold_employee_profiles.parquet"
+    Ollama LLM Configuration
+
+    OLLAMA_MODEL="llama3" # Or your preferred Ollama model
+    Qdrant Configuration
+
+    QDRANT_HOST="157.180.44.51"
+    QDRANT_PORT=6333
+    QDRANT_GRPC_PORT=6334 # gRPC port (optional)
+    QDRANT_API_KEY="" # API key if Qdrant requires authentication
+    QDRANT_COLLECTION_NAME="employee_profiles1" # Default collection name
+    RAG Chain Configuration
+
+    MAX_HISTORY_MESSAGES=6 # Maximum number of chat history messages to send to the LLM
+
+    Note: Ensure MinIO and Qdrant services are running and accessible at the configured endpoints. The config.py file provides default values for these variables if they are not set in the .env file.
+
++---------------------------------------------------+
+|                      Usage                        |
++---------------------------------------------------+
+
+Running the ETL Process (Offline)
+
+To run the ETL process directly, execute the run_etl.py script:
     python run_etl.py
-    ```
 
-    You should see console output indicating the progress of extraction, transformation, and ChromaDB creation. This will also upload the gold_employee_profiles.parquet to your MinIO instance.
+This will start the data extraction, transformation, and Qdrant DB generation based on the files in your configured RAW_RESUMES_BUCKET_NAME MinIO bucket.
 
-    4. Run the Streamlit Application:
-    Once the ETL is complete, launch the RAG application:
+Running the ETL Trigger API
 
-    ```bash
-    python run_app.py
-    ```
+To start the FastAPI application:
+    uvicorn api_main:app --host 0.0.0.0 --port 8000 --reload
 
-    This will open the Streamlit application in your web browser, typically at http://localhost:8501.
+Once the API is running, you can trigger the ETL process by making a POST request to /trigger-etl. For example, using curl:
+    curl -X POST http://localhost:8000/trigger-etl
 
-### Sever setup:
+You can also access the API documentation (Swagger UI) at http://localhost:8000/docs.
 
-* Make sure the server dependencies fastapi, uvicorn and python-multipart are present
-* Simply execute the run_apy.py
-
-### Pipeline Flow
-
-    Input: Raw resume files are placed in the raw_resumes/ directory.
-
-    ETL Execution (run_etl.py -> etl/main_etl.py):
-
-        data_loader.py reads content from each raw resume.
-
-        llm_extractor.py (using Ollama) extracts structured data (Silver Layer) and saves it to employee_profiles.json.
-
-        gold_layer_transformer.py cleans, normalizes, and annotates duplicates in the Silver Layer data, creating the Gold Layer DataFrame.
-
-        The Gold Layer DataFrame is saved as gold_employee_profiles.parquet.
-
-        minio_utils.py uploads gold_employee_profiles.parquet to the configured MinIO bucket.
-
-        chroma_builder.py creates and persists chroma_db/ from the Gold Layer profiles, embedding their content.
-
-    Application Launch (run_app.py -> app/main_app.py):
-
-        app/main_app.py loads the persistent chroma_db/ using app/vector_utils.py.
-
-        It initializes the RAG chain from app/rag_chain.py.
-
-    User Interaction (Streamlit UI):
-
-        Users enter queries in the Streamlit chat interface.
-
-        The query and chat history are sent to the RAG chain.
-
-    RAG Chain Processing (app/rag_chain.py):
-
-        The chain determines if external context is provided or if it needs to retrieve documents.
-
-        It retrieves relevant documents (employee profiles) from chroma_db/ based on the user's query.
-
-        The retrieved documents and the user's query (and chat history) are sent to the Ollama LLM.
-
-        The LLM generates a comprehensive answer based on the provided context.
-
-    Output: The LLM's answer and the source documents (employee profiles) are displayed in the Streamlit UI.
-
-This structured approach ensures efficient data processing, maintainable code, and a robust RAG system for querying employee information.
-
-
-Development note: as of 1/7/2025(dd/mm/yyyy) haystack implemntation in the ETL pipeline could not be done due to version compatability issues.
+The ETL process triggered by the API will execute the main function from main_etl.py as a background task.

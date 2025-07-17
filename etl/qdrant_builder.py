@@ -15,7 +15,7 @@ import asyncio # Added for async operations with MinIO
 from minio import Minio # Added for direct MinIO interaction
 from minio.error import S3Error # Added for direct MinIO error handling
 
-QDRANT_COLLECTION_NAME = "employee_profiles1"
+QDRANT_COLLECTION_NAME = "employee_profiles"
 QDRANT_HOST = "157.180.44.51"
 QDRANT_PORT = 6333
 
