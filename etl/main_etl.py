@@ -1,6 +1,9 @@
 import os
+import sys
 import json
 import shutil
+import signal
+import atexit
 import pandas as pd
 from datetime import datetime
 from minio.error import S3Error
@@ -21,6 +24,32 @@ from etl.gold_layer_transformer import transform_to_gold_layer
 from etl.qdrant_builder import generate_qdrant_db
 from etl.minio_utils import get_minio_client, upload_to_minio, download_from_minio
 
+# -------- Cleanup Hooks --------
+TEMP_PATHS = []
+
+def cleanup():
+    print("\nCleaning up temporary files...")
+    for path in TEMP_PATHS:
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                print(f"  Removed directory: {path}")
+            elif os.path.isfile(path):
+                os.remove(path)
+                print(f"  Removed file: {path}")
+        except Exception as e:
+            print(f"  Failed to remove {path}: {e}")
+
+def handle_exit(signum=None, frame=None):
+    print(f"\nReceived signal {signum}, exiting gracefully...")
+    cleanup()
+    sys.exit(1)
+
+atexit.register(cleanup)
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
+
+# -------- Main ETL Logic --------
 def main():
     print("Starting structured data extraction and embedding generation (supports PDF, DOCX, TXT)....\n")
 
@@ -31,6 +60,7 @@ def main():
         exit()
 
     os.makedirs(RAW_RESUMES_DIR, exist_ok=True)
+    TEMP_PATHS.append(RAW_RESUMES_DIR)
 
     processed_filenames_in_json = set()
     silver_layer_object_name = os.path.basename(OUTPUT_JSON_FILE)
@@ -38,6 +68,7 @@ def main():
     existing_profiles_from_json = []
 
     os.makedirs(os.path.dirname(temp_silver_layer_local_path) or ".", exist_ok=True)
+    TEMP_PATHS.append(OUTPUT_JSON_FILE)
 
     try:
         download_from_minio(minio_client, SILVER_LAYER_BUCKET_NAME, silver_layer_object_name, temp_silver_layer_local_path)
@@ -49,8 +80,6 @@ def main():
             }
             print(f"Loaded {len(processed_filenames_in_json)} previously processed resumes from Silver Layer JSON.")
 
-        # --- Stale profiles detection ---
-        print("Validating Silver Layer entries against actual files in the raw-resumes bucket...")
         actual_filenames_in_bucket = {
             os.path.basename(obj.object_name)
             for obj in minio_client.list_objects(RAW_RESUMES_BUCKET_NAME, recursive=True)
@@ -69,6 +98,7 @@ def main():
         if stale_profiles:
             stale_metadata_filename = f"stale_profiles_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
             stale_metadata_local_path = os.path.join("/tmp", stale_metadata_filename)
+            TEMP_PATHS.append(stale_metadata_local_path)
             with open(stale_metadata_local_path, 'w', encoding='utf-8') as f:
                 json.dump(stale_profiles, f, indent=2, ensure_ascii=False)
             try:
@@ -217,6 +247,7 @@ def main():
     else:
         print(f"Saving {len(gold_df)} gold layer profiles to '{GOLD_LAYER_PARQUET_FILE}'...")
         gold_df.to_parquet(GOLD_LAYER_PARQUET_FILE, index=False)
+        TEMP_PATHS.append(GOLD_LAYER_PARQUET_FILE)
         print("Gold Layer data saved.")
 
         print(f"\nUploading '{GOLD_LAYER_PARQUET_FILE}' to MinIO bucket '{MINIO_BUCKET_NAME}' as '{MINIO_OBJECT_NAME}'...")
@@ -230,12 +261,6 @@ def main():
     print(f"\nGenerating Qdrant DB collection '{QDRANT_COLLECTION_NAME}'...")
     generate_qdrant_db(all_structured_profiles_final_silver, gold_layer_for_qdrant)
     print("Qdrant DB generation complete.")
-
-    print(f"\nCleaning up local files in '{RAW_RESUMES_DIR}' and '{OUTPUT_JSON_FILE}'...")
-    shutil.rmtree(RAW_RESUMES_DIR, ignore_errors=True)
-    if os.path.exists(OUTPUT_JSON_FILE):
-        os.remove(OUTPUT_JSON_FILE)
-    print("Cleanup complete.")
 
     print("\nOffline processing complete. Run your Streamlit app with `python run_app.py`.")
 
