@@ -194,6 +194,11 @@ def main():
                 try:
                     upload_to_minio(minio_client, EXTRACTION_FAILED_BUCKET_NAME, filename, file_path)
                     print(f"  🚨 Uploaded failed resume '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}' bucket.")
+                    try:
+                        minio_client.remove_object(RAW_RESUMES_BUCKET_NAME, filename)
+                        print(f"  🧹 Removed '{filename}' from '{RAW_RESUMES_BUCKET_NAME}' bucket after failure.")
+                    except Exception as remove_err:
+                        print(f"  ⚠️ Failed to remove '{filename}' from '{RAW_RESUMES_BUCKET_NAME}': {remove_err}")
                 except Exception as upload_err:
                     print(f"  ⚠️ Failed to upload '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}': {upload_err}")
 
