@@ -16,8 +16,10 @@ from shared.config import (
     RAW_RESUMES_BUCKET_NAME,
     SILVER_LAYER_BUCKET_NAME,
     REJECTED_PROFILES_BUCKET_NAME,
-    STALE_PROFILES_BUCKET_NAME
+    STALE_PROFILES_BUCKET_NAME,
+    EXTRACTION_FAILED_BUCKET_NAME
 )
+
 from etl.data_loader import load_document_content
 from etl.llm_extractor import initialize_ollama_llm, get_extraction_prompt, process_resume_file
 from etl.gold_layer_transformer import transform_to_gold_layer
@@ -172,14 +174,33 @@ def main():
         print(f"\nProcessing {len(new_resume_files_to_process)} new resume(s)...")
         for file_path in new_resume_files_to_process:
             content, doc_metadata = load_document_content(file_path)
-            if content:
+            if not content:
+                print(f"  Skipping {os.path.basename(file_path)}: Content is empty or unreadable.")
+                continue
+
+            try:
                 structured_data = process_resume_file(llm_for_extraction, extraction_prompt, content, file_path, doc_metadata)
-                if structured_data:
-                    structured_data['_original_filename'] = os.path.basename(file_path)
-                    newly_extracted_profiles.append(structured_data)
+
+                if not structured_data or not isinstance(structured_data, dict):
+                    raise ValueError("No valid structured data returned from LLM.")
+
+                structured_data['_original_filename'] = os.path.basename(file_path)
+                newly_extracted_profiles.append(structured_data)
+                print(f"  ✅ Successfully extracted: {os.path.basename(file_path)}")
+
+            except Exception as e:
+                filename = os.path.basename(file_path)
+                print(f"  ❌ Extraction failed for {filename}: {e}")
+                try:
+                    upload_to_minio(minio_client, EXTRACTION_FAILED_BUCKET_NAME, filename, file_path)
+                    print(f"  🚨 Uploaded failed resume '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}' bucket.")
+                except Exception as upload_err:
+                    print(f"  ⚠️ Failed to upload '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}': {upload_err}")
+
         print(f"Successfully extracted {len(newly_extracted_profiles)} new profiles.")
     else:
         print("\nNo new resumes found for processing.")
+
 
     all_structured_profiles_final_silver = existing_profiles_from_json + newly_extracted_profiles
 

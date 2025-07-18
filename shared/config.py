@@ -45,6 +45,7 @@ REJECTED_PROFILES_BUCKET_NAME = os.getenv("REJECTED_PROFILES_BUCKET_NAME", "reje
 # New MinIO bucket for stale profiles (exist in JSON but missing in raw-resumes bucket)
 STALE_PROFILES_BUCKET_NAME = os.getenv("STALE_PROFILES_BUCKET_NAME", "stale-profiles")
 
+EXTRACTION_FAILED_BUCKET_NAME = os.getenv("EXTRACTION_FAILED_BUCKET_NAME", "errored-extractions")
 
 # Qdrant Configuration (New)
 QDRANT_HOST = os.getenv("QDRANT_HOST", "157.180.44.51") # Hostname/IP of Qdrant service
