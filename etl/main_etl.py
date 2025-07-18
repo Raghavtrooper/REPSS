@@ -26,7 +26,6 @@ from etl.gold_layer_transformer import transform_to_gold_layer
 from etl.qdrant_builder import generate_qdrant_db
 from etl.minio_utils import get_minio_client, upload_to_minio, download_from_minio
 
-# -------- Cleanup Hooks --------
 TEMP_PATHS = []
 
 def cleanup():
@@ -51,7 +50,11 @@ atexit.register(cleanup)
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
-# -------- Main ETL Logic --------
+def mark_as_failed(filename, file_path, minio_client):
+    print(f"  ⚠️ Marking '{filename}' as failed.")
+    upload_to_minio(minio_client, EXTRACTION_FAILED_BUCKET_NAME, filename, file_path)
+    minio_client.remove_object(RAW_RESUMES_BUCKET_NAME, filename)
+
 def main():
     print("Starting structured data extraction and embedding generation (supports PDF, DOCX, TXT)....\n")
 
@@ -173,39 +176,33 @@ def main():
     if new_resume_files_to_process:
         print(f"\nProcessing {len(new_resume_files_to_process)} new resume(s)...")
         for file_path in new_resume_files_to_process:
+            filename = os.path.basename(file_path)
             content, doc_metadata = load_document_content(file_path)
             if not content:
-                print(f"  Skipping {os.path.basename(file_path)}: Content is empty or unreadable.")
+                print(f"  ❌ Skipping {filename}: Content is empty or unreadable.")
+                try:
+                    mark_as_failed(filename, file_path, minio_client)
+                except Exception as err:
+                    print(f"  ⚠️ Failed to mark '{filename}' as failed: {err}")
                 continue
 
             try:
                 structured_data = process_resume_file(llm_for_extraction, extraction_prompt, content, file_path, doc_metadata)
-
                 if not structured_data or not isinstance(structured_data, dict):
                     raise ValueError("No valid structured data returned from LLM.")
 
-                structured_data['_original_filename'] = os.path.basename(file_path)
+                structured_data['_original_filename'] = filename
                 newly_extracted_profiles.append(structured_data)
-                print(f"  ✅ Successfully extracted: {os.path.basename(file_path)}")
+                print(f"  ✅ Successfully extracted: {filename}")
 
             except Exception as e:
-                filename = os.path.basename(file_path)
                 print(f"  ❌ Extraction failed for {filename}: {e}")
                 try:
-                    upload_to_minio(minio_client, EXTRACTION_FAILED_BUCKET_NAME, filename, file_path)
-                    print(f"  🚨 Uploaded failed resume '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}' bucket.")
-                    try:
-                        minio_client.remove_object(RAW_RESUMES_BUCKET_NAME, filename)
-                        print(f"  🧹 Removed '{filename}' from '{RAW_RESUMES_BUCKET_NAME}' bucket after failure.")
-                    except Exception as remove_err:
-                        print(f"  ⚠️ Failed to remove '{filename}' from '{RAW_RESUMES_BUCKET_NAME}': {remove_err}")
-                except Exception as upload_err:
-                    print(f"  ⚠️ Failed to upload '{filename}' to '{EXTRACTION_FAILED_BUCKET_NAME}': {upload_err}")
-
-        print(f"Successfully extracted {len(newly_extracted_profiles)} new profiles.")
+                    mark_as_failed(filename, file_path, minio_client)
+                except Exception as err:
+                    print(f"  ⚠️ Failed to mark '{filename}' as failed: {err}")
     else:
         print("\nNo new resumes found for processing.")
-
 
     all_structured_profiles_final_silver = existing_profiles_from_json + newly_extracted_profiles
 
@@ -219,11 +216,9 @@ def main():
     for profile in all_structured_profiles_final_silver:
         email = profile.get('email_id')
         phone = profile.get('phone_number')
+        original_filename = profile.get('_original_filename', 'unknown_file')
 
-        if (email is None or str(email).strip() == '' or str(email).lower() == 'not found') and \
-           (phone is None or str(phone).strip() == '' or str(phone).lower() == 'not found'):
-
-            original_filename = profile.get('_original_filename', 'unknown_file')
+        if (not email or email.strip().lower() == 'not found') and (not phone or phone.strip().lower() == 'not found'):
             print(f"  Rejecting profile for '{original_filename}': Missing both email and phone number.")
             rejected_profiles_count += 1
 
@@ -239,8 +234,6 @@ def main():
                         print(f"  Warning: Failed to remove '{original_filename}' from '{RAW_RESUMES_BUCKET_NAME}': {e}")
                 except Exception as e:
                     print(f"  Error uploading rejected resume '{original_filename}' to MinIO: {e}")
-            else:
-                print(f"  Warning: Original raw resume file '{original_filename}' not found locally for rejection upload.")
         else:
             processed_profiles.append(profile)
 
