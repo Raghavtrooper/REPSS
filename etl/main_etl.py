@@ -54,6 +54,8 @@ def mark_as_failed(filename, file_path, minio_client):
     print(f"  ⚠️ Marking '{filename}' as failed.")
     upload_to_minio(minio_client, EXTRACTION_FAILED_BUCKET_NAME, filename, file_path)
     minio_client.remove_object(RAW_RESUMES_BUCKET_NAME, filename)
+    print(f"  🧹 Removed '{filename}' from '{RAW_RESUMES_BUCKET_NAME}' bucket after failure.")
+
 
 def main():
     print("Starting structured data extraction and embedding generation (supports PDF, DOCX, TXT)....\n")
